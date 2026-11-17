@@ -56,14 +56,30 @@ describe("encodeSpans", () => {
       { key: "ratio", value: { doubleValue: 0.5 } },
     ])
     assert.equal(a.startTimeUnixNano, "1000000000")
+    assert.equal(a.endTimeUnixNano, "1500000000")
     assert.equal(a.status.code, 1)
     assert.deepEqual(b.status, { code: 2, message: "boom" })
-    assert.equal(
-      b.endTimeUnixNano,
-      b.startTimeUnixNano,
-      "end never precedes start",
+    assert.ok(
+      BigInt(b.endTimeUnixNano) > BigInt(b.startTimeUnixNano),
+      "end is after start, even for a zero-length span",
     )
     assert.match(a.spanId, /^[0-9a-f]{16}$/)
+  })
+})
+
+describe("timestamps", () => {
+  it("keeps sub-millisecond precision as an exact nanosecond string", () => {
+    const body = encodeSpans([
+      {
+        name: "fast",
+        start: 1700000000000.25,
+        end: 1700000000000.75,
+        attrs: {},
+      },
+    ]) as any
+    const span = body.resourceSpans[0].scopeSpans[0].spans[0]
+    assert.equal(span.startTimeUnixNano, "1700000000000250000")
+    assert.equal(span.endTimeUnixNano, "1700000000000750000")
   })
 })
 
@@ -111,7 +127,7 @@ describe("MetricBuffer", () => {
       p.bucketCounts.map(Number).reduce((a: number, b: number) => a + b),
       3,
     )
-    assert.equal(p.bucketCounts[0], "1", "3ms is in the first bucket")
+    assert.equal(p.bucketCounts[1], "1", "3ms is in the 5ms bucket")
     assert.equal(p.bucketCounts.at(-1), "1", "99999ms overflows")
     m.record("d", { agent: "a" }, 1)
     const second = (m.drain(20_000) as any).resourceMetrics[0].scopeMetrics[0]

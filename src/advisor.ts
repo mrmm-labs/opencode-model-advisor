@@ -40,7 +40,8 @@ const PENDING_TTL_MS = 10 * 60_000
 const MAX_CHILDREN = 2000
 
 export function createAdvisor(deps: Deps) {
-  const now = deps.now ?? Date.now
+  // Fractional milliseconds: most decisions take well under one.
+  const now = deps.now ?? (() => performance.timeOrigin + performance.now())
   const state = new RouteState()
   const parents = new Map<string, string | null>()
   const pending = new Map<string, Pending[]>()
@@ -163,7 +164,8 @@ export function createAdvisor(deps: Deps) {
         "route.task": markers.hint.task,
         "route.hint_tier": markers.hint.tier,
         "route.retry": markers.hint.retry,
-        "route.judge_ms": judgeMs,
+        "route.judge_ms":
+          judgeMs === undefined ? undefined : Math.round(judgeMs),
         "route.alert": decision.alert,
       },
     })

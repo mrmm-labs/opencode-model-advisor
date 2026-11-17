@@ -53,7 +53,16 @@ const resource = {
   attributes: [{ key: "service.name", value: { stringValue: SERVICE } }],
 }
 
-const nanos = (ms: number) => `${Math.round(ms)}000000`
+/** Unix nanoseconds as a string from fractional milliseconds; a number cannot hold them exactly. */
+const nanos = (ms: number): string => {
+  let whole = Math.floor(ms)
+  let frac = Math.round((ms - whole) * 1e6)
+  if (frac >= 1e6) {
+    whole += 1
+    frac -= 1e6
+  }
+  return `${whole}${String(frac).padStart(6, "0")}`
+}
 
 export function encodeSpans(spans: readonly Span[]): object {
   return {
@@ -69,7 +78,8 @@ export function encodeSpans(spans: readonly Span[]): object {
               name: s.name,
               kind: 3,
               startTimeUnixNano: nanos(s.start),
-              endTimeUnixNano: nanos(Math.max(s.end, s.start)),
+              // A zero-length span reads as a negative duration in some viewers.
+              endTimeUnixNano: nanos(Math.max(s.end, s.start + 0.001)),
               attributes: attributes({ "session.id": s.session, ...s.attrs }),
               status: s.error ? { code: 2, message: s.error } : { code: 1 },
             })),
@@ -91,7 +101,7 @@ type HistogramPoint = {
   buckets: number[]
 }
 
-const BOUNDS = [5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000]
+const BOUNDS = [1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000]
 
 const labelKey = (attrs: Labels) =>
   JSON.stringify(Object.entries(attrs).sort(([a], [b]) => (a < b ? -1 : 1)))
