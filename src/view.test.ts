@@ -2,7 +2,14 @@ import assert from "node:assert/strict"
 import { describe, it } from "node:test"
 
 import type { AdvisorRecord } from "./decisions.ts"
-import { AlertWatcher, alertToast, decisionRows, sidebarLines } from "./view.ts"
+import {
+  AlertWatcher,
+  alertToast,
+  decisionDetail,
+  decisionRows,
+  routerPanel,
+  shortModel,
+} from "./view.ts"
 
 const t = (n: number) => new Date(1_700_000_000_000 + n * 1000).toISOString()
 
@@ -47,34 +54,57 @@ const records: AdvisorRecord[] = [
 const copy = (id: string): AdvisorRecord =>
   Object.assign(structuredClone(records[0]), { id })
 
-describe("sidebar lines", () => {
+const row = {
+  agent: "builder",
+  models: "opus → sonnet",
+  why: "read-only",
+  changed: true,
+}
+
+describe("router panel", () => {
   it("shows a child its own decision and its advisor usage", () => {
-    assert.deepEqual(sidebarLines(records, "child"), [
-      "router shadow · builder→sonnet (would) · rule:read-only",
-      "advisor 2 calls $0.04",
-    ])
+    assert.deepEqual(routerPanel(records, "child"), {
+      mode: "shadow",
+      rows: [row],
+      more: 0,
+      advice: "advisor 2 calls $0.04",
+    })
   })
 
   it("shows the dispatching session its decisions and its children's advisor usage", () => {
-    const lines = sidebarLines(records, "root")
-    assert.equal(
-      lines[0],
-      "router shadow · builder→sonnet (would) · rule:read-only",
-    )
-    assert.equal(lines[1], "advisor 2 calls $0.04")
+    const panel = routerPanel(records, "root")
+    assert.deepEqual(panel?.rows, [row])
+    assert.equal(panel?.advice, "advisor 2 calls $0.04")
   })
 
-  it("says applied in enforce mode and is empty for an unrelated session", () => {
-    const enforce = records.map((r) =>
-      r.kind === "decision" ? { ...r, mode: "enforce" as const } : r,
-    )
-    assert.match(sidebarLines(enforce, "child")[0], /\(applied\)/)
-    assert.deepEqual(sidebarLines(records, "other"), [])
+  it("marks an unchanged model and is empty for an unrelated session", () => {
+    const same = [Object.assign(copy("s"), { would: "claude-opus-5-5" })]
+    assert.deepEqual(routerPanel(same, "root")?.rows[0], {
+      agent: "builder",
+      models: "opus",
+      why: "read-only",
+      changed: false,
+    })
+    assert.equal(routerPanel(records, "other"), undefined)
   })
 
-  it("caps a busy dispatcher at two decisions plus a count", () => {
-    const many = [1, 2, 3, 4].map((n) => copy(`d${n}`))
-    assert.match(sidebarLines(many, "root")[0], /\+2$/)
+  it("caps a busy dispatcher at four rows, newest first, plus a count", () => {
+    const many = [1, 2, 3, 4, 5, 6].map((n) =>
+      Object.assign(copy(`d${n}`), { agent: `a${n}` }),
+    )
+    const panel = routerPanel(many, "root")
+    assert.deepEqual(
+      panel?.rows.map((r) => r.agent),
+      ["a6", "a5", "a4", "a3"],
+    )
+    assert.equal(panel?.more, 2)
+  })
+})
+
+describe("short model", () => {
+  it("keeps the family and drops provider and version", () => {
+    assert.equal(shortModel("anthropic/claude-sonnet-5-5"), "sonnet")
+    assert.equal(shortModel("gpt-5"), "gpt-5")
   })
 })
 
@@ -82,15 +112,36 @@ describe("decision rows", () => {
   it("lists newest first, at most the limit, with the advisor of the routed child", () => {
     const rows = decisionRows(records, 20)
     assert.equal(rows.length, 1)
-    assert.match(rows[0].title, /builder → sonnet/)
-    assert.match(
-      rows[0].description,
-      /shadow · applied claude-opus-5-5 · would claude-sonnet-5-5 · rule:read-only · rule read-only · advisor 2 calls \$0.04/,
-    )
+    assert.match(rows[0].title, /^\d\d:\d\d  builder  opus → sonnet$/)
+    assert.equal(rows[0].description, "read-only · advisor 2 calls $0.04")
+    assert.equal(rows[0].category, "Would change the model")
     const many = Array.from({ length: 30 }, (_, n) => copy(`x${n}`))
     const rows2 = decisionRows(many, 20)
     assert.equal(rows2.length, 20)
     assert.equal(rows2[0].value, "x29")
+  })
+
+  it("puts changes above kept models and aligns the agent column", () => {
+    const kept = Object.assign(copy("k"), {
+      agent: "explore",
+      would: "claude-opus-5-5",
+      t: t(9),
+    })
+    const rows = decisionRows([records[0], kept], 20)
+    assert.deepEqual(
+      rows.map((r) => r.category),
+      ["Would change the model", "Would keep the model"],
+    )
+    assert.equal(rows[0].title.indexOf("opus"), rows[1].title.indexOf("opus"))
+  })
+})
+
+describe("decision detail", () => {
+  it("states what ran, what the router picks and why", () => {
+    const text = decisionDetail(records, "d1") ?? ""
+    assert.match(text, /^builder: ran opus, router would pick sonnet$/m)
+    assert.match(text, /^why: rule:read-only: rule read-only$/m)
+    assert.equal(decisionDetail(records, "nope"), undefined)
   })
 })
 

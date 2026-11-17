@@ -36,7 +36,7 @@ def screen():
     return re.sub(rb"\x1b\[[0-9;?]*[A-Za-z]",b" ",buf).decode("utf8","ignore")
 os.write(fd,b"\x15: decisions"); pump(1)
 os.write(fd,b"\r"); pump(2)
-print("decisions dialog:", "builder → sonnet" in screen(), "rule:read-only" in screen())
+print("decisions dialog:", "builder  opus → sonnet" in screen(), "Would change the model" in screen(), "read-only" in screen())
 os.write(fd,b"\x1b"); pump(1)
 os.write(fd,b"\x10"); pump(1)
 os.write(fd,b"advisor: mode"); pump(1)

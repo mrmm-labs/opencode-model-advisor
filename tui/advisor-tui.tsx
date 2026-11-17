@@ -1,6 +1,6 @@
 /** @jsxImportSource @opentui/solid */
 /**
- * The router's TUI: a sidebar line per session, three commands and alert toasts.
+ * The router's TUI: a sidebar panel per session, three commands and alert toasts.
  *
  * It runs in a different process from the server plugin, so it never touches
  * the router. It reads the decisions file the plugin appends to, and changes
@@ -26,8 +26,10 @@ import { parseJsonc } from "../dist/jsonc.js"
 import {
   alertToast,
   AlertWatcher,
+  decisionDetail,
   decisionRows,
-  sidebarLines,
+  routerPanel,
+  type Panel,
 } from "../dist/view.js"
 
 type Option<T> = {
@@ -43,10 +45,16 @@ type Toast = {
 }
 type Command = { id: string; title: string; slash: string; run: () => void }
 
+type Colours = { text: unknown; muted: unknown; changed: unknown }
+type Position = "top" | "bottom"
+
 type Host = {
-  muted: () => unknown
+  colours: () => Colours
   currentSession: () => string | undefined
-  sidebar: (render: (session: string) => JSX.Element) => void
+  sidebar: (
+    position: Position,
+    render: (session: string) => JSX.Element,
+  ) => void
   commands: (list: Command[]) => void
   select: <T>(title: string, options: Option<T>[]) => Promise<T | undefined>
   confirm: (title: string, message: string) => Promise<boolean>
@@ -76,14 +84,52 @@ function start(host: Host): () => void {
     for (const alert of watcher.fresh(all)) host.toast(alertToast(alert))
   }, 2000)
 
-  host.sidebar((session) => {
+  // Folding lasts for this TUI run; a click on the heading toggles it.
+  const [folded, setFolded] = createSignal(false)
+  const position = loadConfig().tui.position
+  host.sidebar(position, (session) => {
     lastSession = session
-    const lines = () => sidebarLines(records(), session)
+    const panel = () => routerPanel(records(), session)
+    const p = () => panel() as Panel
+    const c = () => host.colours() as Record<keyof Colours, never>
+    // Lists, not nested <Show>: a false <Show> inside a <box> leaves an
+    // orphan text node, which opentui rejects.
+    const footer = () =>
+      [
+        p().more > 0 && `  +${p().more} more · /advisor-decisions`,
+        p().advice && `  ${p().advice}`,
+      ].filter((l): l is string => !!l)
+    const agentWidth = () =>
+      Math.min(
+        14,
+        Math.max(5, ...(panel()?.rows ?? []).map((r) => r.agent.length)),
+      )
     return (
-      <Show when={lines().length > 0}>
-        <box>
-          <For each={lines()}>
-            {(line) => <text fg={host.muted() as never}>{line}</text>}
+      <Show when={panel()}>
+        <box
+          paddingTop={position === "bottom" ? 1 : 0}
+          paddingBottom={position === "top" ? 1 : 0}
+        >
+          <text fg={c().text} onMouseUp={() => setFolded(!folded())}>
+            {folded() ? "\u25b8 " : "\u25be "}
+            <b>Model router</b>
+            <span style={{ fg: c().muted }}> {p().mode}</span>
+          </text>
+          <For each={folded() ? [] : p().rows}>
+            {(row) => (
+              <box>
+                <text fg={c().text}>
+                  {`  ${row.agent.padEnd(agentWidth())}  `}
+                  <span style={{ fg: row.changed ? c().changed : c().muted }}>
+                    {row.models}
+                  </span>
+                </text>
+                <text fg={c().muted}>{`    ${row.why}`}</text>
+              </box>
+            )}
+          </For>
+          <For each={folded() ? [] : footer()}>
+            {(line) => <text fg={c().muted}>{line}</text>}
           </For>
         </box>
       </Show>
@@ -202,7 +248,10 @@ function start(host: Host): () => void {
             title: "Advisor",
             message: "No decisions yet.",
           })
-        await host.select("Last 20 decisions", rows)
+        const id = await host.select("Model router: last 20 decisions", rows)
+        const detail = id && decisionDetail(reader.read(), id)
+        if (detail)
+          host.toast({ variant: "info", title: "Decision", message: detail })
       },
     },
   ])
@@ -219,16 +268,21 @@ const colour = (value: any) =>
 function hostV2(ctx: V2Context): Host {
   const theme = ctx.theme as any
   return {
-    muted: () => colour(theme.text?.muted),
+    colours: () => ({
+      text: colour(theme.text?.base),
+      muted: colour(theme.text?.muted),
+      changed: colour(theme.text?.feedback?.warning),
+    }),
     currentSession: () => {
       const route = ctx.ui.router.current()
       return route.type === "session" ? route.sessionID : undefined
     },
-    sidebar: (render) =>
-      ctx.ui.slot({
-        append: "sidebar.content",
-        render: (slot) => render(slot.sessionID),
-      }),
+    sidebar: (position, render) =>
+      ctx.ui.slot(
+        position === "top"
+          ? { prepend: "sidebar.content", render: (s) => render(s.sessionID) }
+          : { append: "sidebar.content", render: (s) => render(s.sessionID) },
+      ),
     commands: (list) =>
       ctx.keymap.layer(() => ({
         mode: "global",
@@ -252,11 +306,16 @@ function hostV2(ctx: V2Context): Host {
 
 function hostV1(api: TuiPluginApi): Host {
   return {
-    muted: () => api.theme.current.textMuted,
+    colours: () => ({
+      text: api.theme.current.text,
+      muted: api.theme.current.textMuted,
+      changed: api.theme.current.warning,
+    }),
     currentSession: () => undefined,
-    sidebar: (render) => {
+    sidebar: (position, render) => {
       api.slots.register({
-        order: 215,
+        // Lower renders first.
+        order: position === "top" ? 1 : 900,
         slots: {
           sidebar_content(_ctx, props: { session_id: string }) {
             return render(props.session_id)

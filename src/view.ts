@@ -1,6 +1,6 @@
 /**
- * What the TUI shows, as plain functions over the decisions stream: sidebar
- * lines, the decisions list and the alert toasts. No UI types in here.
+ * What the TUI shows, as plain functions over the decisions stream: the
+ * sidebar panel, the decisions list and the alert toasts. No UI types in here.
  */
 import type {
   AdviceRecord,
@@ -13,12 +13,6 @@ const money = (usd: number): string => `$${usd.toFixed(2)}`
 
 const sourceLabel = (d: DecisionRecord): string =>
   d.source === "rule" && d.rule ? `rule:${d.rule}` : d.source
-
-/** `builder→sonnet (would) · rule:read-only`; enforce says `applied`. */
-export function decisionText(d: DecisionRecord): string {
-  const state = d.mode === "enforce" ? "applied" : "would"
-  return `${d.agent}→${d.tier} (${state}) · ${sourceLabel(d)}`
-}
 
 type Index = {
   decisions: Map<string, DecisionRecord>
@@ -68,43 +62,74 @@ export function adviceText(t: Total): string | undefined {
   return undefined
 }
 
+/** `claude-sonnet-5-5` -> `sonnet`; anything else is kept as is. */
+export const shortModel = (id: string): string =>
+  id.replace(/^[\w-]+\//, "").replace(/^claude-([a-z]+)-[\d-]+$/, "$1")
+
+const fit = (s: string, n: number) =>
+  s.length > n ? `${s.slice(0, n - 1)}…` : s.padEnd(n)
+
+export type PanelRow = {
+  agent: string
+  /** `sonnet` when unchanged, `sonnet → opus` when the router differs. */
+  models: string
+  why: string
+  changed: boolean
+}
+
+export type Panel = {
+  mode: string
+  rows: PanelRow[]
+  /** Older decisions not shown. */
+  more: number
+  advice?: string
+}
+
+const panelRow = (d: DecisionRecord): PanelRow => {
+  const ran = shortModel(d.model)
+  const would = shortModel(d.would)
+  return {
+    agent: d.agent,
+    models: ran === would ? ran : `${ran} → ${would}`,
+    why: sourceLabel(d).replace(/^rule:/, ""),
+    changed: ran !== would,
+  }
+}
+
 /**
- * One or two short lines for a session. A routed child shows its own decision;
- * a dispatching session shows its latest ones, and the advisor usage of the
- * session and the children it dispatched.
+ * The sidebar block for one session: its own routing if it is a routed child,
+ * else the latest decisions it dispatched, newest first. Undefined when the
+ * session has nothing to show.
  */
-export function sidebarLines(
+export function routerPanel(
   records: AdvisorRecord[],
   session: string,
-): string[] {
+  limit = 4,
+): Panel | undefined {
   const ix = index(records)
-  const own = ix.links.get(session)
   const family = new Set([session])
   for (const [child, parent] of ix.parents)
     if (parent === session) family.add(child)
   const advice = adviceText(adviceFor(ix, family))
-
-  const lines: string[] = []
+  const own = ix.links.get(session)
   const owned = own ? ix.decisions.get(own) : undefined
-  if (owned) lines.push(`router ${owned.mode} · ${decisionText(owned)}`)
-  else {
-    const mine = [...ix.decisions.values()].filter((d) => d.session === session)
-    const last = mine.slice(-2)
-    if (last.length) {
-      const mode = last[last.length - 1].mode
-      const rest = mine.length - last.length
-      lines.push(
-        `router ${mode} · ${last.map(decisionText).join(" | ")}${rest > 0 ? ` +${rest}` : ""}`,
-      )
-    }
+  const mine = owned
+    ? [owned]
+    : [...ix.decisions.values()].filter((d) => d.session === session)
+  if (mine.length === 0 && !advice) return undefined
+  const shown = mine.slice(-limit).toReversed()
+  return {
+    mode: mine.at(-1)?.mode ?? "shadow",
+    rows: shown.map(panelRow),
+    more: mine.length - shown.length,
+    ...(advice ? { advice } : {}),
   }
-  if (advice) lines.push(advice)
-  return lines
 }
 
 export type DecisionRow = {
   title: string
   description: string
+  category: string
   value: string
 }
 
@@ -112,10 +137,14 @@ const p = (n: number) => String(n).padStart(2, "0")
 
 const clock = (iso: string): string => {
   const d = new Date(iso)
-  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+  return `${p(d.getHours())}:${p(d.getMinutes())}`
 }
 
-/** The newest `limit` decisions, newest first. */
+/**
+ * The newest `limit` decisions, newest first, as fixed columns
+ * (`19:05  general         sonnet → opus`) with the reason as description,
+ * grouped into those the router would change and those it would keep.
+ */
 export function decisionRows(
   records: AdvisorRecord[],
   limit = 20,
@@ -123,28 +152,51 @@ export function decisionRows(
   const ix = index(records)
   const childOf = new Map<string, string>()
   for (const [child, id] of ix.links) childOf.set(id, child)
-  return [...ix.decisions.values()]
-    .slice(-limit)
-    .toReversed()
-    .map((d) => {
-      const child = childOf.get(d.id)
-      const advice = child
-        ? adviceText(adviceFor(ix, new Set([child])))
-        : undefined
-      const parts = [
-        d.mode,
-        `applied ${d.model}`,
-        `would ${d.would}`,
-        sourceLabel(d),
-        d.reason,
-        ...(advice ? [advice] : []),
-      ]
-      return {
-        title: `${clock(d.t)} ${d.agent} → ${d.tier}`,
-        description: parts.join(" · "),
-        value: d.id,
-      }
-    })
+  const recent = [...ix.decisions.values()].slice(-limit).toReversed()
+  const width = Math.min(16, Math.max(5, ...recent.map((d) => d.agent.length)))
+  const rows = recent.map((d) => {
+    const row = panelRow(d)
+    const child = childOf.get(d.id)
+    const advice = child
+      ? adviceText(adviceFor(ix, new Set([child])))
+      : undefined
+    return {
+      title: `${clock(d.t)}  ${fit(d.agent, width)}  ${row.models}`,
+      description: [row.why, d.task && `task ${d.task}`, advice]
+        .filter(Boolean)
+        .join(" · "),
+      category:
+        d.mode === "enforce"
+          ? "Applied"
+          : row.changed
+            ? "Would change the model"
+            : "Would keep the model",
+      value: d.id,
+    }
+  })
+  // The dialog groups by category in order of first appearance; keep the
+  // changes on top, newest first inside each group.
+  const order = ["Applied", "Would change the model", "Would keep the model"]
+  return rows.toSorted(
+    (x, y) => order.indexOf(x.category) - order.indexOf(y.category),
+  )
+}
+
+/** Everything known about one decision, one fact per line, for a detail toast. */
+export function decisionDetail(
+  records: AdvisorRecord[],
+  id: string,
+): string | undefined {
+  const d = index(records).decisions.get(id)
+  if (!d) return undefined
+  return [
+    `${d.agent}: ran ${shortModel(d.model)}, router ${d.mode === "enforce" ? "applied" : "would pick"} ${shortModel(d.would)}`,
+    `why: ${sourceLabel(d)}: ${d.reason}`,
+    d.task ? `task: ${d.task}` : undefined,
+    `at: ${new Date(d.t).toLocaleString()}`,
+  ]
+    .filter(Boolean)
+    .join("\n")
 }
 
 export function alertToast(a: AlertRecord): {

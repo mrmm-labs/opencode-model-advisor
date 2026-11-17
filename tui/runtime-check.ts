@@ -63,19 +63,19 @@ assert.equal(typeof plugin.tui, "function")
 const stop = plugin.setup(ctx as never)
 
 assert.equal(slots.length, 1)
-assert.equal(slots[0].append, "sidebar.content")
+assert.equal(slots[0].prepend, "sidebar.content")
 
-// The sidebar renders the decision line for the session, in a headless renderer.
+// The sidebar renders the router panel for the session, in a headless renderer.
 const { testRender } = await import("@opentui/solid")
 const shown = await testRender(() => slots[0].render({ sessionID: "s1" }), {
-  width: 80,
-  height: 5,
+  width: 40,
+  height: 6,
 })
 await shown.renderOnce()
-assert.match(
-  shown.captureCharFrame(),
-  /router shadow · builder→sonnet \(would\) · rule:r/,
-)
+const frame = shown.captureCharFrame()
+assert.match(frame, /Model router shadow/)
+assert.match(frame, /^  builder  opus → sonnet\s*$/m)
+assert.match(frame, /^    r\s*$/m)
 shown.renderer.destroy()
 
 const commands = layers[0].commands
@@ -88,7 +88,8 @@ assert.ok(commands.every((c: any) => c.palette === true))
 const run = (slash: string) =>
   commands.find((c: any) => c.slash.name === slash).run()
 await run("advisor-decisions")
-assert.equal(selects[0].title, "Last 20 decisions")
+assert.equal(selects[0].title, "Model router: last 20 decisions")
+assert.equal(selects[0].options[0].category, "Would change the model")
 assert.equal(selects[0].options[0].value, "d1")
 
 confirmed = false

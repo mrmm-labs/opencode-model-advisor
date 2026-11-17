@@ -99,6 +99,7 @@ Invalid parts fall back to defaults and a warning goes to the log.
 | `rules`         | none                           | `{ id, when, tier }`, see above                                           |
 | `judge`         | disabled, haiku, 8000 ms       | `{ enabled, model, timeoutMs }`                                           |
 | `advisor`       | disabled, top tier, 2 uses     | `{ enabled, model, maxUses, maxContextTokens, alertSteps }`, see Advising |
+| `tui.position`  | `top`                          | Router panel placement in the session sidebar: `top` or `bottom`          |
 | `otel.endpoint` | env or off                     | OTLP/HTTP base URL; `OTEL_EXPORTER_OTLP_ENDPOINT` is the fallback         |
 
 `otel.headers` adds request headers (for an authenticated collector). The log is
@@ -180,13 +181,28 @@ A directory plugin that has a `tui.tsx` next to its `index.js` gets the TUI load
 (the build needs `pnpm run build` first, because the TUI imports from `dist/`). Restart the TUI to
 pick it up; the server plugin does not need a restart.
 
-- **Sidebar**: up to two short lines per session, for example
-  `router shadow · builder→sonnet (would) · rule:read-only`. A routed subagent session shows its own
-  decision; the session that dispatched it shows its latest decisions.
+- **Sidebar**: a `Model router` panel at the top of the session sidebar (`tui.position: "bottom"`
+  moves it to the end; restart the TUI after changing it). One entry per decision, newest first, at
+  most four, then a `+N more` line. Click the heading to fold it.
+
+  ```
+  ▾ Model router shadow
+    general  sonnet → opus
+      critical
+    explore  sonnet
+      read-only
+  ```
+
+  `sonnet → opus` (highlighted) is what ran, then what the router picks; one model means they
+  agree. A routed subagent session shows its own decision; the session that dispatched it shows its
+  latest.
+
 - **`advisor: mode`** (also `/advisor-mode`): switch shadow and enforce. Going to enforce asks first.
 - **`advisor: pin`** (`/advisor-pin`): pin an agent, or the current session, to a tier; or remove a pin.
-- **`advisor: decisions`** (`/advisor-decisions`): the last 20 decisions with time, agent, applied
-  model, the model it would have chosen, source or rule, and reason.
+- **`advisor: decisions`** (`/advisor-decisions`): the last 20 decisions in aligned columns (time,
+  agent, models), grouped into "Would change the model" and "Would keep the model" ("Applied" in
+  enforce mode), with the rule, task and advisor usage under each. Select one for a toast with the
+  full reason.
 - **Toasts** for alerts: a task failing twice, the judge failing. Alerts never block anything.
 
 The TUI is a separate process from the server plugin, so the two share files only. The plugin

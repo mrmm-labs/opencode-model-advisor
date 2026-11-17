@@ -38,6 +38,8 @@ export type Config = {
     alertSteps: number
   }
   otel: { endpoint?: string; headers?: Record<string, string> }
+  /** Where the router block sits in the session sidebar. */
+  tui: { position: "top" | "bottom" }
 }
 
 export const DEFAULT_TIERS = {
@@ -64,6 +66,7 @@ export const defaultConfig = (): Config => ({
     alertSteps: 15,
   },
   otel: {},
+  tui: { position: "top" },
 })
 
 const isObject = (v: unknown): v is Record<string, unknown> =>
@@ -281,6 +284,12 @@ export function buildConfig(raw: unknown): {
       ) as Record<string, string>
     }
   }
+
+  if (isObject(raw.tui)) {
+    const pos = raw.tui.position
+    if (pos === "top" || pos === "bottom") config.tui.position = pos
+    else if (pos !== undefined) warn('tui.position must be "top" or "bottom"')
+  } else if (raw.tui !== undefined) warn("tui must be an object")
 
   return { config, warnings }
 }

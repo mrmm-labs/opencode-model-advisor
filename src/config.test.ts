@@ -53,6 +53,16 @@ describe("buildConfig", () => {
     assert.equal(bad.warnings.length, 1)
   })
 
+  it("reads the sidebar position and warns on a bad one", () => {
+    assert.equal(buildConfig({}).config.tui.position, "top")
+    const ok = buildConfig({ tui: { position: "bottom" } })
+    assert.equal(ok.config.tui.position, "bottom")
+    assert.deepEqual(ok.warnings, [])
+    const bad = buildConfig({ tui: { position: "left" } })
+    assert.equal(bad.config.tui.position, "top")
+    assert.equal(bad.warnings.length, 1)
+  })
+
   it("reads mode, tiers, ladder order and default", () => {
     const { config, warnings } = buildConfig({
       mode: "enforce",
