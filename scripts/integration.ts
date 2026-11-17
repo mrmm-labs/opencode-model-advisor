@@ -53,6 +53,8 @@ type Scenario = {
   turns?: string[]
   /** Installs a stand-in for the request-hook owner; the advisor hooks run through it. */
   hooks?: boolean
+  /** The provider answers an advised request with a 400 naming the advisor. */
+  refuse?: boolean
   /** Env for the opencode process. */
   env?: Record<string, string>
 }
@@ -187,6 +189,28 @@ async function replayProvider(scenario: Scenario, seen: Seen[]) {
     const advised = (body.tools ?? []).some(
       (t: { type?: string }) => t.type === "advisor_20260301",
     )
+    if (advised && scenario.refuse) {
+      kind = "advised"
+      seen.push({
+        model: body.model,
+        kind,
+        text: user.text,
+        tools: (body.tools ?? []).map(
+          (t: { type?: string; name: string }) => t.type ?? t.name,
+        ),
+      })
+      res.writeHead(400, { "content-type": "application/json" })
+      res.end(
+        JSON.stringify({
+          type: "error",
+          error: {
+            type: "invalid_request_error",
+            message: "advisor_20260301: tool type not supported for this model",
+          },
+        }),
+      )
+      return
+    }
     if (advised) {
       kind = "advised"
       reply = readFileSync(
@@ -509,6 +533,56 @@ function checkAdvisor(s: Scenario, r: Awaited<ReturnType<typeof runScenario>>) {
   console.log(
     `opencode exits=${r.codes.join(",")}; replay saw: ${r.seen.map((x) => `${x.kind}@${x.model}`).join(", ")}`,
   )
+  if (s.config && (s.config as { mode?: string }).mode === "shadow") {
+    check(
+      r.codes.every((c) => c === 0) && advised.length === 0,
+      "shadow: the turn ran and no advisor was attached",
+      r.seen.map((x) => [x.kind, x.tools]),
+    )
+    const would = r.decisions.filter((x: any) => x.kind === "advice" && x.would)
+    check(
+      would.length === 1,
+      "shadow: decisions.jsonl records one would-attach for the session",
+      r.decisions,
+    )
+    check(
+      metricsOf(r.metrics).some(
+        (m) => m.name === "model_advisor.advisor.would_attach",
+      ),
+      "shadow: metric model_advisor.advisor.would_attach exported",
+    )
+    return
+  }
+  if (s.refuse) {
+    check(
+      r.codes.every((c) => c === 0) && r.outputs[0].includes("ok"),
+      "refused pairing: the turn still succeeds",
+      r.outputs[0].slice(-600),
+    )
+    check(
+      r.seen.filter((x) => x.kind === "advised").length >= 1 &&
+        r.seen.some(
+          (x) =>
+            x.kind === "unadvised" && !x.tools?.includes("advisor_20260301"),
+        ),
+      "refused pairing: resent once without the advisor tool",
+      r.seen.map((x) => [x.kind, x.tools]),
+    )
+    check(
+      r.decisions.some(
+        (x: any) => x.kind === "alert" && x.alert === "advisor-refused",
+      ),
+      "refused pairing: alert recorded",
+      r.decisions,
+    )
+    check(
+      metricsOf(r.metrics).some(
+        (m) => m.name === "model_advisor.advisor.refusals",
+      ),
+      "refused pairing: metric model_advisor.advisor.refusals exported",
+    )
+    return
+  }
   if (s.env?.STUB_SKIP_RESPONSE_HOOKS) {
     check(
       r.codes[0] === 0,
@@ -616,6 +690,23 @@ async function main() {
       turns: advisorTurns,
       agent: "smoke-primary",
       hooks: true,
+    },
+    {
+      name: "advisor-shadow",
+      config: { ...advisorConfig, mode: "shadow" },
+      dispatch,
+      turns: [advisorTurns[0]],
+      agent: "smoke-primary",
+      hooks: true,
+    },
+    {
+      name: "advisor-refused",
+      config: advisorConfig,
+      dispatch,
+      turns: [advisorTurns[0]],
+      agent: "smoke-primary",
+      hooks: true,
+      refuse: true,
     },
     {
       name: "advisor-no-filter",

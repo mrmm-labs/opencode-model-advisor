@@ -148,7 +148,7 @@ renumbers the remaining block indexes, and removes `advisor_message` entries fro
 (the top-level token counts become the executor's own). Everything else passes through byte for byte,
 chunk by chunk. The advice is encrypted and is not kept in history; it shapes only the turn it was
 given in. `pnpm run test:integration` runs two turns of one session through a real OpenCode, with and
-without the filter, to show both outcomes.
+without the filter, to show both outcomes; it also covers shadow mode and a refused pairing.
 
 **A refused pairing** (a 400 that names the advisor, the tool type or the beta) is resent once
 without the tool, the header value and the system line; the turn does not fail. The pair is then left
