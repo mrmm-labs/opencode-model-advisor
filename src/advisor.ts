@@ -1,3 +1,4 @@
+import { createAdvise } from "./advise.ts"
 import { bareModel, type Config } from "./config.ts"
 import { appendRecord, type AdvisorRecord } from "./decisions.ts"
 import { firstSeen } from "./guard.ts"
@@ -318,6 +319,14 @@ export function createAdvisor(deps: Deps) {
     }
   }
 
+  const advise = createAdvise({
+    config: deps.config,
+    telemetry: deps.telemetry,
+    record,
+    root: (id) => rootOf(id),
+    now,
+  })
+
   return {
     state,
     /** Decides one dispatch; never throws. */
@@ -332,6 +341,7 @@ export function createAdvisor(deps: Deps) {
       }
     },
     onEvent,
+    advise,
     dispose: () => deps.telemetry.dispose(),
   }
 }

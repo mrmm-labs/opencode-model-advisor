@@ -48,6 +48,16 @@
   // Asked only when no rule matched. One short model call per dispatch.
   "judge": { "enabled": false, "model": "claude-haiku-5-5", "timeoutMs": 8000 },
 
+  // Off by default. Needs mode "enforce" and opencode-claude-accounts with request hooks.
+  // Cheaper executors may consult the advisor model; context is estimated as body length / 4.
+  "advisor": {
+    "enabled": false,
+    "model": "claude-opus-5-5",
+    "maxUses": 2,
+    "maxContextTokens": 120000,
+    "alertSteps": 15,
+  },
+
   // OTLP/HTTP base URL. Falls back to OTEL_EXPORTER_OTLP_ENDPOINT; off when neither is set.
   "otel": { "endpoint": "http://127.0.0.1:4318" },
 }

@@ -11,6 +11,7 @@ import {
   resetShared,
   track,
 } from "./guard.ts"
+import { registerHooks } from "./hooks.ts"
 import type { Telemetry } from "./otel.ts"
 
 const telemetry = {
@@ -68,6 +69,24 @@ describe("single instance", () => {
     await advisor.decide(dispatch)
     await advisor.decide({ ...dispatch, callID: "call_2" })
     assert.equal(records.filter((r) => r.kind === "decision").length, 2)
+  })
+
+  it("registers the request hooks once per process, whoever loads first", () => {
+    const g = globalThis as {
+      __claudeAccountsHooks?: { before: unknown[]; response: unknown[] }
+    }
+    g.__claudeAccountsHooks = { before: ["theirs"], response: [] }
+    registerHooks()
+    registerHooks()
+    registerHooks()
+    assert.equal(g.__claudeAccountsHooks.before.length, 2)
+    assert.equal(g.__claudeAccountsHooks.response.length, 1)
+  })
+
+  it("creates the registry itself when it is not there yet", () => {
+    registerHooks()
+    const g = globalThis as { __claudeAccountsHooks?: { before: unknown[] } }
+    assert.equal(g.__claudeAccountsHooks?.before.length, 1)
   })
 
   it("hooks keep working after the instance that registered them is gone", () => {

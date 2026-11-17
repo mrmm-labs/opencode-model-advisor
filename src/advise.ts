@@ -1,0 +1,362 @@
+/**
+ * The advisor tool: attached to a cheaper model's requests so it can consult a
+ * stronger one, with the advisor's blocks filtered out of the response.
+ *
+ * It runs as hooks on opencode-claude-accounts' request path (the only place
+ * the Messages body and response stream are reachable from a plugin).
+ */
+import { bareModel, type Config } from "./config.ts"
+import type { AlertRecord, AdviceRecord, AdvisorRecord } from "./decisions.ts"
+import { JUDGE_MARK } from "./judge.ts"
+import { log } from "./logger.ts"
+import type { Telemetry } from "./otel.ts"
+import { listCostUsd } from "./pricing.ts"
+import { skipReason } from "./router.ts"
+import {
+  filterMessage,
+  filterStream,
+  type AdvisorUsage,
+} from "./stream-filter.ts"
+
+export const BETA = "advisor-tool-2026-03-01"
+export const TOOL_TYPE = "advisor_20260301"
+export const SYSTEM_LINE =
+  "You have an advisor tool backed by a stronger model. Consult it before committing to an approach, when an error repeats, and before declaring the task done."
+
+export type HookRequest = {
+  url: string
+  body: Record<string, unknown>
+  headers: Headers
+  model: string
+  agent?: string
+  sessionID?: string
+}
+export type HookContext = HookRequest & {
+  resend: (body: Record<string, unknown>) => Promise<Response>
+}
+
+type Json = Record<string, any>
+
+/** Characters per token: a rough, model-independent estimate of context size. */
+const CHARS_PER_TOKEN = 4
+const MAX_TRACKED = 500
+
+export type AdviseDeps = {
+  config: () => Config
+  telemetry: Telemetry
+  record: (record: AdvisorRecord) => void
+  root: (session: string) => Promise<string>
+  now: () => number
+}
+
+/** Position of a model on the ladder: a tier whose model id matches, else the tier name in the id. */
+export function rankOf(model: string, config: Config): number | undefined {
+  const bare = bareModel(model).toLowerCase()
+  const at = config.ladder.findIndex(
+    (t) =>
+      bareModel(config.tiers[t]).toLowerCase() === bare ||
+      bare.includes(t.toLowerCase()),
+  )
+  return at < 0 ? undefined : at
+}
+
+export const estimateTokens = (body: Json): number =>
+  Math.ceil(JSON.stringify(body).length / CHARS_PER_TOKEN)
+
+const toolsOf = (body: Json): Json[] =>
+  Array.isArray(body.tools) ? body.tools : []
+
+export const hasAdvisor = (body: Json): boolean =>
+  toolsOf(body).some((t) => t?.type === TOOL_TYPE)
+
+export function mergeBeta(headers: Headers, add: boolean): void {
+  const parts = (headers.get("anthropic-beta") ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s && s !== BETA)
+  if (add) parts.push(BETA)
+  if (parts.length) headers.set("anthropic-beta", parts.join(","))
+  else headers.delete("anthropic-beta")
+}
+
+function addSystemLine(body: Json): void {
+  const system = body.system
+  if (typeof system === "string") {
+    if (!system.includes(SYSTEM_LINE))
+      body.system = `${system}\n\n${SYSTEM_LINE}`
+  } else if (Array.isArray(system) && system.length > 0) {
+    const last = system.findLast((b) => b?.type === "text")
+    if (last && !String(last.text).includes(SYSTEM_LINE))
+      last.text = `${last.text}\n\n${SYSTEM_LINE}`
+    else if (!last) system.push({ type: "text", text: SYSTEM_LINE })
+  } else body.system = [{ type: "text", text: SYSTEM_LINE }]
+}
+
+function dropSystemLine(body: Json): void {
+  const strip = (t: string) =>
+    t.replace(`\n\n${SYSTEM_LINE}`, "").replace(SYSTEM_LINE, "")
+  if (typeof body.system === "string") body.system = strip(body.system)
+  else if (Array.isArray(body.system))
+    body.system = body.system
+      .map((b: Json) =>
+        b?.type === "text" ? { ...b, text: strip(String(b.text)) } : b,
+      )
+      .filter((b: Json) => b?.type !== "text" || b.text !== "")
+}
+
+/** A copy of the body without the advisor tool and its system line. */
+export function withoutAdvisor(body: Json): Json {
+  const copy = structuredClone(body)
+  if (Array.isArray(copy.tools)) {
+    copy.tools = copy.tools.filter((t: Json) => t?.type !== TOOL_TYPE)
+    if (copy.tools.length === 0) delete copy.tools
+  }
+  dropSystemLine(copy)
+  return copy
+}
+
+/** True when the last message starts a turn rather than returning tool results. */
+function startsTurn(body: Json): boolean {
+  const last = Array.isArray(body.messages)
+    ? body.messages[body.messages.length - 1]
+    : undefined
+  if (!last || last.role !== "user") return false
+  return !(
+    Array.isArray(last.content) &&
+    last.content.some((b: Json) => b?.type === "tool_result")
+  )
+}
+
+const REFUSAL = /advisor|tool type|beta/i
+
+export function createAdvise(deps: AdviseDeps) {
+  /** Executor/advisor pairs the API refused; never attached again in this process. */
+  const refused = new Set<string>()
+  const turns = new Map<string, { steps: number; alerted: boolean }>()
+  const wouldSeen = new Set<string>()
+
+  const stamp = () => new Date(deps.now()).toISOString()
+
+  function alert(r: Omit<AlertRecord, "v" | "kind" | "t">): void {
+    deps.record({ v: 1, kind: "alert", t: stamp(), ...r })
+    log("alert", r)
+  }
+
+  /** Long turn, enforce mode, executor below the advisor, no advisor attached. */
+  function watchSteps(req: HookRequest, config: Config, attached: boolean) {
+    if (!req.sessionID || !req.agent) return
+    const turn = turns.get(req.sessionID) ?? { steps: 0, alerted: false }
+    if (startsTurn(req.body)) {
+      turn.steps = 0
+      turn.alerted = false
+    }
+    turn.steps++
+    turns.delete(req.sessionID)
+    turns.set(req.sessionID, turn)
+    if (turns.size > MAX_TRACKED) {
+      const oldest = turns.keys().next().value
+      if (oldest !== undefined) turns.delete(oldest)
+    }
+    if (
+      attached ||
+      turn.alerted ||
+      turn.steps <= config.advisor.alertSteps ||
+      config.mode !== "enforce"
+    )
+      return
+    turn.alerted = true
+    alert({
+      alert: "long-turn-no-advisor",
+      agent: req.agent,
+      session: req.sessionID,
+      detail: `${turn.steps} steps on ${bareModel(req.model)} with no advisor`,
+    })
+  }
+
+  function before(req: HookRequest): void {
+    const config = deps.config()
+    const a = config.advisor
+    if (!a.enabled || !req.agent || skipReason(req.agent, config)) return
+    const mine = rankOf(req.model, config)
+    const theirs = rankOf(a.model, config)
+    if (mine === undefined || theirs === undefined || mine >= theirs) return
+    const text = JSON.stringify(req.body)
+    if (text.includes(JUDGE_MARK)) return
+    const pair = `${bareModel(req.model)}|${bareModel(a.model)}`
+    const tooBig = text.length / CHARS_PER_TOKEN > a.maxContextTokens
+    const ok = !refused.has(pair) && !tooBig
+
+    if (config.mode !== "enforce") {
+      if (ok && req.sessionID && !wouldSeen.has(req.sessionID)) {
+        wouldSeen.add(req.sessionID)
+        if (wouldSeen.size > MAX_TRACKED) wouldSeen.clear()
+        deps.telemetry.count("model_advisor.advisor.would_attach", {
+          agent: req.agent,
+        })
+        deps.record({
+          v: 1,
+          kind: "advice",
+          t: stamp(),
+          session: req.sessionID,
+          agent: req.agent,
+          attached: false,
+          would: true,
+          calls: 0,
+          inTokens: 0,
+          outTokens: 0,
+          cost: 0,
+        })
+      }
+      return
+    }
+    watchSteps(req, config, ok)
+    if (!ok) return
+
+    const tools = toolsOf(req.body)
+    if (!hasAdvisor(req.body)) {
+      req.body.tools = [
+        ...tools,
+        {
+          type: TOOL_TYPE,
+          name: "advisor",
+          model: a.model,
+          max_uses: a.maxUses,
+        },
+      ]
+    }
+    mergeBeta(req.headers, true)
+    addSystemLine(req.body)
+  }
+
+  async function record(
+    req: HookRequest,
+    config: Config,
+    usage: AdvisorUsage,
+    start: number,
+  ): Promise<void> {
+    const agent = req.agent ?? "unknown"
+    const model = usage.model ?? config.advisor.model
+    // The advisor reads the transcript uncached, so list price covers it.
+    const cost =
+      listCostUsd(model, {
+        input: usage.inputTokens,
+        output: usage.outputTokens,
+        cache: { read: usage.cacheRead, write: usage.cacheWrite },
+      }) ?? 0
+    deps.telemetry.count("model_advisor.advisor.calls", { agent }, usage.calls)
+    deps.telemetry.count(
+      "model_advisor.advisor.tokens",
+      { agent, kind: "input" },
+      usage.inputTokens,
+    )
+    deps.telemetry.count(
+      "model_advisor.advisor.tokens",
+      { agent, kind: "output" },
+      usage.outputTokens,
+    )
+    deps.telemetry.count("model_advisor.advisor.cost_usd", { agent }, cost)
+    deps.telemetry.span({
+      name: `advisor ${agent}`,
+      session: req.sessionID,
+      traceSession: req.sessionID ? await deps.root(req.sessionID) : undefined,
+      start,
+      end: deps.now(),
+      attrs: {
+        "opencode.agent": agent,
+        "advisor.attached": true,
+        "advisor.model": model,
+        "advisor.calls": usage.calls,
+        "advisor.input_tokens": usage.inputTokens,
+        "advisor.output_tokens": usage.outputTokens,
+        "advisor.cost_usd": cost,
+      },
+    })
+    if (req.sessionID) {
+      deps.record({
+        v: 1,
+        kind: "advice",
+        t: stamp(),
+        session: req.sessionID,
+        agent,
+        attached: true,
+        calls: usage.calls,
+        inTokens: usage.inputTokens,
+        outTokens: usage.outputTokens,
+        cost,
+      })
+    }
+  }
+
+  async function response(res: Response, ctx: HookContext): Promise<Response> {
+    const attached =
+      hasAdvisor(ctx.body) ||
+      (ctx.headers.get("anthropic-beta") ?? "").includes(BETA)
+    if (!attached) return res
+    const config = deps.config()
+    const start = deps.now()
+
+    if (res.status === 400) {
+      const text = await res
+        .clone()
+        .text()
+        .catch(() => "")
+      if (!REFUSAL.test(text)) return res
+      refused.add(`${bareModel(ctx.model)}|${bareModel(config.advisor.model)}`)
+      mergeBeta(ctx.headers, false)
+      deps.telemetry.count("model_advisor.advisor.refusals", {
+        agent: ctx.agent ?? "unknown",
+      })
+      if (ctx.sessionID)
+        deps.record({
+          v: 1,
+          kind: "advice",
+          t: stamp(),
+          session: ctx.sessionID,
+          agent: ctx.agent ?? "unknown",
+          attached: false,
+          refused: true,
+          calls: 0,
+          inTokens: 0,
+          outTokens: 0,
+          cost: 0,
+        })
+      alert({
+        alert: "advisor-refused",
+        agent: ctx.agent,
+        session: ctx.sessionID,
+        detail: text.slice(0, 160),
+      })
+      return ctx.resend(withoutAdvisor(ctx.body))
+    }
+    if (!res.ok || !res.body) return res
+
+    const headers = new Headers(res.headers)
+    headers.delete("content-length")
+    headers.delete("content-encoding")
+    const init = { status: res.status, statusText: res.statusText, headers }
+    if ((res.headers.get("content-type") ?? "").includes("event-stream")) {
+      return new Response(
+        filterStream(res.body, (usage) => {
+          if (usage.calls > 0) void record(ctx, config, usage, start)
+        }),
+        init,
+      )
+    }
+    try {
+      const message = (await res.clone().json()) as Json
+      const usage = filterMessage(message)
+      if (usage.calls > 0) void record(ctx, config, usage, start)
+      return new Response(JSON.stringify(message), init)
+    } catch (err) {
+      log("advisor_filter_error", {
+        message: err instanceof Error ? err.message : String(err),
+      })
+      return res
+    }
+  }
+
+  return { before, response }
+}
+
+export type Advise = ReturnType<typeof createAdvise>
+export type { AdviceRecord }

@@ -216,4 +216,39 @@ describe("example config", () => {
     assert.equal(config.mode, "shadow")
     assert.equal(config.rules.length, 5)
   })
+
+  it("reads the advisor block, defaulting its model to the top tier", () => {
+    const off = buildConfig({}).config.advisor
+    assert.deepEqual(off, {
+      enabled: false,
+      model: "claude-opus-5-5",
+      maxUses: 2,
+      maxContextTokens: 120_000,
+      alertSteps: 15,
+    })
+    const custom = buildConfig({
+      tiers: { small: "m-small", big: "m-big" },
+      advisor: { enabled: true, maxUses: 4, alertSteps: 9 },
+    }).config.advisor
+    assert.equal(custom.model, "m-big")
+    assert.equal(custom.enabled, true)
+    assert.equal(custom.maxUses, 4)
+    assert.equal(custom.alertSteps, 9)
+    assert.equal(
+      buildConfig({ advisor: { model: "claude-opus-5-5-x" } }).config.advisor
+        .model,
+      "claude-opus-5-5-x",
+    )
+  })
+
+  it("warns and keeps defaults for a bad advisor setting", () => {
+    const { config, warnings } = buildConfig({
+      advisor: { maxUses: 0, maxContextTokens: "lots", alertSteps: 1.5 },
+    })
+    assert.equal(config.advisor.maxUses, 2)
+    assert.equal(config.advisor.maxContextTokens, 120_000)
+    assert.equal(config.advisor.alertSteps, 15)
+    assert.equal(warnings.length, 3)
+    assert.equal(buildConfig({ advisor: 3 }).warnings.length, 1)
+  })
 })

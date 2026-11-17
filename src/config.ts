@@ -27,6 +27,16 @@ export type Config = {
   pins: Record<string, string>
   rules: Rule[]
   judge: { enabled: boolean; model: string; timeoutMs: number }
+  advisor: {
+    enabled: boolean
+    /** Model id of the advisor; defaults to the top tier. */
+    model: string
+    maxUses: number
+    /** Skip attaching above this many estimated context tokens (chars / 4). */
+    maxContextTokens: number
+    /** Alert when an executor turn has more steps than this and no advisor. */
+    alertSteps: number
+  }
   otel: { endpoint?: string; headers?: Record<string, string> }
 }
 
@@ -46,6 +56,13 @@ export const defaultConfig = (): Config => ({
   pins: {},
   rules: [],
   judge: { enabled: false, model: DEFAULT_TIERS.haiku, timeoutMs: 8000 },
+  advisor: {
+    enabled: false,
+    model: DEFAULT_TIERS.opus,
+    maxUses: 2,
+    maxContextTokens: 120_000,
+    alertSteps: 15,
+  },
   otel: {},
 })
 
@@ -238,6 +255,20 @@ export function buildConfig(raw: unknown): {
     else if (j.timeoutMs !== undefined)
       warn("judge.timeoutMs must be a positive number")
   } else if (raw.judge !== undefined) warn("judge must be an object")
+
+  config.advisor.model = config.tiers[config.ladder[config.ladder.length - 1]]
+  if (isObject(raw.advisor)) {
+    const a = raw.advisor
+    if (typeof a.enabled === "boolean") config.advisor.enabled = a.enabled
+    if (typeof a.model === "string" && a.model) config.advisor.model = a.model
+    for (const key of ["maxUses", "maxContextTokens", "alertSteps"] as const) {
+      const v = a[key]
+      if (typeof v === "number" && Number.isInteger(v) && v > 0)
+        config.advisor[key] = v
+      else if (v !== undefined)
+        warn(`advisor.${key} must be a positive integer; using default`)
+    }
+  } else if (raw.advisor !== undefined) warn("advisor must be an object")
 
   if (isObject(raw.otel)) {
     if (typeof raw.otel.endpoint === "string" && raw.otel.endpoint)

@@ -20,13 +20,16 @@ export type JudgeResult =
 
 const PROMPT_CHARS = 4000
 
+/** Opens every judge prompt; the advisor policy uses it to leave judge calls alone. */
+export const JUDGE_MARK = "You route one coding-agent task to a model tier"
+
 export function judgePrompt(
   config: Config,
   agent: string,
   prompt: string,
 ): string {
   return [
-    "You route one coding-agent task to a model tier. Pick the cheapest tier that does the task well.",
+    `${JUDGE_MARK}. Pick the cheapest tier that does the task well.`,
     `Tiers, cheapest first: ${config.ladder.join(", ")}.`,
     "Use the cheapest for lookups, formatting and mechanical edits; the middle one for ordinary implementation and review; the strongest for hard design, security-sensitive, ambiguous or large-scale work.",
     `Answer with JSON only: {"tier":"<${config.ladder.join("|")}>","reason":"<at most 15 words>"}`,

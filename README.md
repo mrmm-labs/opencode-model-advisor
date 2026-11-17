@@ -7,8 +7,8 @@ worker into Opus, and nothing says why a dispatch got the model it got. This plu
 once, when the task is dispatched, from rules you write, an optional Haiku judge and a default. It
 starts in **shadow mode**: it records what it would do and changes nothing.
 
-This is step 1 of [the design](docs/spec.md): the router and its telemetry. The advisor tool (a
-stronger model consulted mid-task) is not implemented yet.
+This implements [the design](docs/spec.md): the router and its telemetry, a TUI, and the advisor tool
+(a stronger model a cheaper executor can consult mid-task), which is off by default.
 
 ## Roles
 
@@ -88,17 +88,18 @@ The judge works in both modes. In shadow it still makes its call so `would` is a
 `~/.config/opencode/model-advisor.jsonc` (JSONC), or the path in `OPENCODE_MODEL_ADVISOR_CONFIG`.
 Invalid parts fall back to defaults and a warning goes to the log.
 
-| Key             | Default                        | Meaning                                                           |
-| --------------- | ------------------------------ | ----------------------------------------------------------------- |
-| `mode`          | `shadow`                       | `shadow` or `enforce`                                             |
-| `provider`      | `anthropic`                    | Provider id for tiers that name a bare model id                   |
-| `tiers`         | haiku, sonnet, opus (5.5)      | Tier name to model id. Key order is the ladder, cheapest first    |
-| `default`       | `sonnet`                       | Tier when nothing else decides                                    |
-| `orchestrators` | `build`, `plan`, `coordinator` | Agents that are never routed                                      |
-| `pins`          | none                           | Agent name or `session:<id>` to tier                              |
-| `rules`         | none                           | `{ id, when, tier }`, see above                                   |
-| `judge`         | disabled, haiku, 8000 ms       | `{ enabled, model, timeoutMs }`                                   |
-| `otel.endpoint` | env or off                     | OTLP/HTTP base URL; `OTEL_EXPORTER_OTLP_ENDPOINT` is the fallback |
+| Key             | Default                        | Meaning                                                                   |
+| --------------- | ------------------------------ | ------------------------------------------------------------------------- |
+| `mode`          | `shadow`                       | `shadow` or `enforce`                                                     |
+| `provider`      | `anthropic`                    | Provider id for tiers that name a bare model id                           |
+| `tiers`         | haiku, sonnet, opus (5.5)      | Tier name to model id. Key order is the ladder, cheapest first            |
+| `default`       | `sonnet`                       | Tier when nothing else decides                                            |
+| `orchestrators` | `build`, `plan`, `coordinator` | Agents that are never routed                                              |
+| `pins`          | none                           | Agent name or `session:<id>` to tier                                      |
+| `rules`         | none                           | `{ id, when, tier }`, see above                                           |
+| `judge`         | disabled, haiku, 8000 ms       | `{ enabled, model, timeoutMs }`                                           |
+| `advisor`       | disabled, top tier, 2 uses     | `{ enabled, model, maxUses, maxContextTokens, alertSteps }`, see Advising |
+| `otel.endpoint` | env or off                     | OTLP/HTTP base URL; `OTEL_EXPORTER_OTLP_ENDPOINT` is the fallback         |
 
 `otel.headers` adds request headers (for an authenticated collector). The log is
 `~/.local/share/opencode/model-advisor/advisor.log` (`OPENCODE_MODEL_ADVISOR_LOG` overrides it).
@@ -112,6 +113,66 @@ your agents: treat the judge as a hint, with rules and pins above it.
 
 It is off by default because every dispatch no rule matched costs one extra short call, and in shadow
 mode that is pure overhead until you read the results.
+
+## Advising
+
+With `advisor.enabled: true` and `mode: "enforce"`, a cheaper model's requests get the Anthropic
+`advisor_20260301` tool, so the executor can consult a stronger model (by default the top tier)
+before committing to an approach, when an error repeats, and before declaring the task done.
+
+```jsonc
+"advisor": { "enabled": true, "model": "claude-opus-5-5", "maxUses": 2, "maxContextTokens": 120000, "alertSteps": 15 }
+```
+
+A request gets the advisor when all of these hold:
+
+- the advisor is enabled and the mode is `enforce` (in shadow mode nothing is attached; the first
+  request of each session records `advisor.would_attach` so you can see what enforcing would do);
+- the executor's model is below the advisor model on the tier ladder;
+- the agent is set and is not an orchestrator, and the request is not a judge call;
+- the estimated context is under `maxContextTokens`. The estimate is the JSON body length divided by
+  four. An advisor call reads the whole transcript uncached, so its cost grows with the context;
+- the API has not already refused this executor and advisor pair in this process.
+
+Attaching adds the tool (`max_uses` = `maxUses`), merges `advisor-tool-2026-03-01` into the
+`anthropic-beta` header, and appends one line to the last system text block telling the model when to
+consult. The tool definition and the line are the same on every request, so the prompt cache is not
+invalidated. If the context outgrows the limit mid-session the tool is left off from then on, which
+does change the prefix once.
+
+**The response filter.** OpenCode cannot round-trip the advisor's server tool result: the turn after
+an advisor call fails with `Anthropic Messages does not know how to round-trip server tool result for
+advisor`. So the plugin filters every response to a request it attached the advisor to. It drops the
+`advisor` `server_tool_use` and `advisor_tool_result` blocks (their start, delta and stop events),
+renumbers the remaining block indexes, and removes `advisor_message` entries from `usage.iterations`
+(the top-level token counts become the executor's own). Everything else passes through byte for byte,
+chunk by chunk. The advice is encrypted and is not kept in history; it shapes only the turn it was
+given in. `pnpm run test:integration` runs two turns of one session through a real OpenCode, with and
+without the filter, to show both outcomes.
+
+**A refused pairing** (a 400 that names the advisor, the tool type or the beta) is resent once
+without the tool, the header value and the system line; the turn does not fail. The pair is then left
+alone for the rest of the process, and an alert is raised.
+
+**Where it hooks in.** A plugin cannot reach the Messages request on its own, so this runs as hooks
+on the request path of [opencode-claude-accounts](https://github.com/mrmm-labs/opencode-claude-accounts).
+The contract is a registry on `globalThis`, created by whichever plugin loads first:
+
+```ts
+globalThis.__claudeAccountsHooks ??= { before: [], response: [] }
+// before:   (req) => void | Promise<void>                       mutate req.body / req.headers in place
+// response: (res, ctx) => Response | Promise<Response>          may wrap the stream; ctx.resend(body) sends again
+// req = { url, body, headers, model, agent?, sessionID? }
+```
+
+This plugin registers once per process, however many project instances load it. If nothing ever
+calls the hooks, advising never happens, and the log gets one `advisor_hooks_idle` line a minute
+after start.
+
+Observer output: a span `advisor <agent>` per request with advisor calls, the metrics below, a
+sidebar line (`advisor 2 calls $0.04`), and the decisions list. Alerts (toast, never blocking): the
+advisor was refused, or an executor below the advisor tier ran a turn of more than `alertSteps`
+steps with no advisor attached (enforce mode).
 
 ## TUI
 
@@ -174,6 +235,11 @@ plugins' spans for one session tree land in one trace.
 | `model_advisor.decision.duration`               | histogram | `agent`, `source`, `mode`; ms, includes the judge      |
 | `model_advisor.shadow.estimated_saving_usd`     | counter   | `agent`, `model`, `would`                              |
 | `model_advisor.shadow.estimated_extra_cost_usd` | counter   | `agent`, `model`, `would`                              |
+| `model_advisor.advisor.calls`                   | counter   | `agent`                                                |
+| `model_advisor.advisor.tokens`                  | counter   | `agent`, `kind` (`input`, `output`)                    |
+| `model_advisor.advisor.cost_usd`                | counter   | `agent`; advisor tokens at list price, input uncached  |
+| `model_advisor.advisor.refusals`                | counter   | `agent`                                                |
+| `model_advisor.advisor.would_attach`            | counter   | `agent`; shadow mode                                   |
 
 `changed` is true when the chosen model differs from the caller's: what enforce would change.
 
@@ -191,7 +257,9 @@ more goes to `estimated_extra_cost_usd` instead, so both counters only grow.
 - The saving estimate prices tokens only; it ignores that a cheaper model may need more steps.
 - OpenCode 1: routing, spans and metrics work; there is no judge (no one-shot model call for plugins)
   and no saving estimate (no per-step cost events).
-- The advisor tool and stream filter from the spec are not built.
+- Advising needs opencode-claude-accounts with request hooks; without them nothing is attached.
+- The advisor has not been tried with executor thinking enabled, or against the real API accepting a follow-up turn whose earlier advisor blocks were removed; the integration test replays a captured stream. Leave it in shadow mode first.
+- Orchestrators never get the advisor here, although the spec lets an orchestrator on a cheaper model have one.
 - Coexistence with a plugin that rewrites the model per request (such as `agentModels` in
   opencode-claude-accounts) is not detected; remove routed agents from such settings.
 

@@ -1,5 +1,7 @@
 import { createAdvisor, type Advisor, type SessionInfo } from "./advisor.ts"
 import { ConfigStore, type Config } from "./config.ts"
+import { track } from "./guard.ts"
+import { registerHooks } from "./hooks.ts"
 import type { JudgeFn } from "./judge.ts"
 import { log } from "./logger.ts"
 import { Telemetry, type OtelTarget } from "./otel.ts"
@@ -27,5 +29,17 @@ export function createCore(host: Host, store = new ConfigStore()): Advisor {
     judge: config.judge.enabled && !!host.judge,
     otel: !!otelTarget(config),
   })
-  return createAdvisor({ config: () => store.get(), telemetry, ...host })
+  const advisor = createAdvisor({
+    config: () => store.get(),
+    telemetry,
+    ...host,
+  })
+  const untrack = track(advisor)
+  const dispose = advisor.dispose
+  advisor.dispose = async () => {
+    untrack()
+    await dispose()
+  }
+  registerHooks()
+  return advisor
 }
