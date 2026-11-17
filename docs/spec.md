@@ -116,8 +116,8 @@ estimated cost). Switch with one config key or the TUI command.
 - **opencode-claude-accounts** `agentModels` rewrites the model per request and would undo the
   router. Routed agents are removed from `agentModels`; the plugin warns at start if an agent
   appears in both.
-- **Harness dispatch routing** stops deciding when this plugin is loaded (one check on the
-  harness side, outside this repo).
+- **Other routers** (an agent harness that sets `model` on dispatches) stop deciding when this
+  plugin is loaded and pass their hints through the hint line instead, so there is one decider.
 - **Claude Code**: not in scope; it has `/advisor` and per-subagent `model` natively.
 
 ## Example consumer: a ticket-driven agent factory
@@ -128,12 +128,34 @@ estimated cost). Switch with one config key or the TUI command.
 - The coordinator and approver keep Opus (orchestrator list / rule).
 - The factory's usage report reads `route.*` and `advisor.*` from the usage log to show the mix.
 
-## First step: spike (30 min)
+## Validation (done before implementation)
 
-Send one Sonnet request with the advisor tool through OpenCode's Anthropic provider and check
-the stream: `server_tool_use` / `advisor_tool_result` blocks must not break parsing, and the
-usage block must carry advisor tokens. If it breaks, advising waits (routing ships alone) or the
-plugin strips/translates those blocks.
+Tested with Claude Code 2.1.322 and OpenCode 2.3.0, on a subscription (OAuth) account,
+Sonnet 5.5 executor + Opus 5.5 advisor.
+
+| # | Test | Result |
+| --- | --- | --- |
+| A | Advisor tool accepted on a subscription account (Claude Code `--advisor opus`) | ✅ one `server_tool_use` (`advisor`) + `advisor_tool_result` (`advisor_redacted_result`, encrypted). Fails silently (no tool attached) when `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` |
+| A | Request shape | `{"type":"advisor_20260301","name":"advisor","model":"claude-opus-5-5"}` in `tools` |
+| A | Usage reporting | top-level `usage` is the executor only; advisor tokens are only in `usage.iterations[]` (`type: "advisor_message"`, `model`) |
+| A | Advisor cost | the advisor read the whole transcript **uncached** (29k input tokens, cache read 0). One consult ≈ context × Opus input price |
+| B | OpenCode turn 1 with the raw advisor stream | ✅ answer shown; ⚠️ advisor shown as a failed `advisor` tool ("Provider did not return a tool result"); ⚠️ advisor tokens summed into the executor's (priced as Sonnet) |
+| C | OpenCode turn 2 (same session) | ❌ fails before sending: `Anthropic Messages does not know how to round-trip server tool result for advisor` |
+| C | Turn 1 + 2 with advisor blocks stripped from the response stream (indexes renumbered, usage executor-only) | ✅ both turns succeed, clean history, correct executor tokens |
+
+Consequences for the design:
+
+1. **Advising requires a response-stream filter**: drop `server_tool_use`(`advisor`) and
+   `advisor_tool_result` blocks, renumber block indexes, and remove `advisor_message` entries from
+   `usage.iterations` (recording them separately as advisor usage). Without it, every OpenCode
+   session breaks on the turn after its first advisor call.
+2. **The advisor's advice is not kept in history** (it is encrypted anyway); it only shapes the
+   turn it was given in.
+3. **Advisor calls are priced by context size**: gate attaching the advisor on context length
+   (e.g. under 120k tokens) and keep `maxUses` low.
+4. Not yet tested: executor thinking enabled together with an advisor call; the real API
+   accepting a follow-up turn whose earlier assistant message had its advisor blocks removed.
+   Both go in the shadow week with live requests before enforcing.
 
 ## Out of scope
 
