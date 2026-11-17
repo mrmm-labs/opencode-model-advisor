@@ -35,6 +35,7 @@ export async function setup(ctx: Context) {
       if (!input || typeof input.prompt !== "string") return
       const applied = await advisor.decide({
         sessionID: event.sessionID,
+        callID: (event as { id?: string }).id,
         agent: input.agent,
         prompt: input.prompt,
         model: typeof input.model === "string" ? input.model : undefined,

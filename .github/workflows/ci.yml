@@ -40,6 +40,7 @@ jobs:
           cache: "pnpm"
       - run: pnpm install --frozen-lockfile
       - run: pnpm run build
+      - run: pnpm run check:tui
       # Lists what npm would ship, in the job log.
       - run: npm pack --dry-run
 

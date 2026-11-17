@@ -113,6 +113,31 @@ your agents: treat the judge as a hint, with rules and pins above it.
 It is off by default because every dispatch no rule matched costs one extra short call, and in shadow
 mode that is pure overhead until you read the results.
 
+## TUI
+
+A directory plugin that has a `tui.tsx` next to its `index.js` gets the TUI loaded by OpenCode 2
+(the build needs `pnpm run build` first, because the TUI imports from `dist/`). Restart the TUI to
+pick it up; the server plugin does not need a restart.
+
+- **Sidebar**: up to two short lines per session, for example
+  `router shadow · builder→sonnet (would) · rule:read-only`. A routed subagent session shows its own
+  decision; the session that dispatched it shows its latest decisions.
+- **`advisor: mode`** (also `/advisor-mode`): switch shadow and enforce. Going to enforce asks first.
+- **`advisor: pin`** (`/advisor-pin`): pin an agent, or the current session, to a tier; or remove a pin.
+- **`advisor: decisions`** (`/advisor-decisions`): the last 20 decisions with time, agent, applied
+  model, the model it would have chosen, source or rule, and reason.
+- **Toasts** for alerts: a task failing twice, the judge failing. Alerts never block anything.
+
+The TUI is a separate process from the server plugin, so the two share files only. The plugin
+appends one line per decision to `decisions.jsonl` next to `advisor.log` (rolled to `.1` past 256 KB;
+no prompt text, reasons cut to 200 characters; `OPENCODE_MODEL_ADVISOR_DECISIONS` overrides the
+path). The TUI reads it, and changes behaviour only by editing `model-advisor.jsonc` (`mode`,
+`pins`): one top-level value is replaced, through a temp file and a rename, and every comment in the
+file stays. The plugin picks the change up on its next config re-read.
+
+OpenCode loads the plugin once per open project in the same process. Decisions are de-duplicated by
+tool call id, so each dispatch is recorded and counted once.
+
 ## Telemetry
 
 Off until `otel.endpoint` or `OTEL_EXPORTER_OTLP_ENDPOINT` is set. No dependencies: spans and
@@ -175,6 +200,9 @@ more goes to `estimated_extra_cost_usd` instead, so both counters only grow.
 ```sh
 pnpm install
 pnpm run typecheck && pnpm run lint && pnpm test
+pnpm run check:tui          # type-check the TUI (after a build)
+pnpm run check:v2           # run the TUI entry against a fake OpenCode 2 context (needs bun)
+pnpm run test:tui           # load the TUI in an isolated OpenCode, in a pseudo-terminal
 pnpm run test:integration   # the built plugin in an isolated OpenCode, replayed provider
 pnpm run smoke:telemetry    # synthetic decisions to an OTLP collector
 ```

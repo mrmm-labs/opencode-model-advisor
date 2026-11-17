@@ -44,6 +44,7 @@ export const server: V1Plugin = async ({ client }) => {
         if (!args || typeof args.prompt !== "string") return
         const applied = await advisor.decide({
           sessionID: input.sessionID,
+          callID: (input as { callID?: string }).callID,
           agent: args.subagent_type,
           prompt: args.prompt,
           model: modelString(args.model),

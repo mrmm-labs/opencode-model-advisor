@@ -1,4 +1,6 @@
 import { bareModel, type Config } from "./config.ts"
+import { appendRecord, type AdvisorRecord } from "./decisions.ts"
+import { firstSeen } from "./guard.ts"
 import { parseMarkers } from "./hint.ts"
 import { runJudge, type JudgeFn } from "./judge.ts"
 import { log } from "./logger.ts"
@@ -15,11 +17,15 @@ export type Deps = {
   /** Absent when the host offers no one-shot model call; the judge step is then skipped. */
   judge?: JudgeFn
   now?: () => number
+  /** Where decisions, alerts and advisor usage go; the decisions file by default. */
+  record?: (record: AdvisorRecord) => void
 }
 
 export type Dispatch = {
   /** The dispatching session. */
   sessionID: string
+  /** The host's id for this tool call; a dispatch seen twice is routed once. */
+  callID?: string
   agent?: string
   prompt: string
   /** The model the caller asked for, as "provider/model" or a bare id. */
@@ -33,8 +39,14 @@ export type Applied = { model?: string; prompt?: string }
 
 export type HostEvent = { type: string; data?: Record<string, any> }
 
-type Pending = { agent: string; would: string; at: number }
-type Child = { agent: string; would: string; model: string }
+type Pending = {
+  id: string
+  agent: string
+  would: string
+  at: number
+  shadow: boolean
+}
+type Child = { agent: string; would: string; model: string; shadow: boolean }
 
 const PENDING_TTL_MS = 10 * 60_000
 const MAX_CHILDREN = 2000
@@ -46,6 +58,9 @@ export function createAdvisor(deps: Deps) {
   const parents = new Map<string, string | null>()
   const pending = new Map<string, Pending[]>()
   const children = new Map<string, Child>()
+  const record = deps.record ?? appendRecord
+  let seq = 0
+  const stamp = () => new Date(now()).toISOString()
 
   /** The top of the session's parent chain, cached; the trace id derives from it. */
   async function rootOf(id: string, first?: SessionInfo): Promise<string> {
@@ -70,6 +85,7 @@ export function createAdvisor(deps: Deps) {
     const config = deps.config()
     if (d.continuing) return undefined
     if (skipReason(d.agent, config)) return undefined
+    if (d.callID && !firstSeen(`${d.sessionID}|${d.callID}`)) return undefined
     const agent = d.agent as string
     const start = now()
 
@@ -101,6 +117,16 @@ export function createAdvisor(deps: Deps) {
         outcome: judged.ok ? "ok" : judged.outcome,
       })
       judgeMs = judged.ms
+      if (!judged.ok)
+        record({
+          v: 1,
+          kind: "alert",
+          t: stamp(),
+          alert: "judge-failed",
+          agent,
+          session: d.sessionID,
+          detail: `${judged.outcome}: ${judged.reason}`.slice(0, 160),
+        })
       input.judge = judged.ok
         ? { ok: true, tier: judged.tier, reason: judged.reason }
         : { ok: false, reason: judged.reason }
@@ -123,6 +149,7 @@ export function createAdvisor(deps: Deps) {
         step: decision.escalation,
       })
     }
+    const id = d.callID ?? `${d.sessionID}:${++seq}`
     if (decision.alert) {
       log("alert", {
         alert: decision.alert,
@@ -130,7 +157,33 @@ export function createAdvisor(deps: Deps) {
         task: markers.hint.task,
         tier: decision.tier,
       })
+      record({
+        v: 1,
+        kind: "alert",
+        t: stamp(),
+        alert: decision.alert,
+        agent,
+        session: d.sessionID,
+        task: markers.hint.task,
+        detail: decision.reason.slice(0, 160),
+      })
     }
+    record({
+      v: 1,
+      kind: "decision",
+      t: stamp(),
+      id,
+      session: d.sessionID,
+      agent,
+      mode: config.mode,
+      model: applied,
+      would,
+      tier: decision.tier,
+      source: decision.source,
+      rule: decision.rule,
+      reason: decision.reason.slice(0, 200),
+      task: markers.hint.task,
+    })
 
     deps.telemetry.count("model_advisor.decisions", {
       agent,
@@ -170,13 +223,11 @@ export function createAdvisor(deps: Deps) {
       },
     })
 
-    if (!enforce) {
-      const key = `${d.sessionID}|${agent}`
-      const queue = pending.get(key) ?? []
-      queue.push({ agent, would, at: end })
-      pending.set(key, queue.slice(-100))
-      return undefined
-    }
+    const key = `${d.sessionID}|${agent}`
+    const queue = pending.get(key) ?? []
+    queue.push({ id, agent, would, at: end, shadow: !enforce })
+    pending.set(key, queue.slice(-100))
+    if (!enforce) return undefined
     const applying: Applied = {}
     if (changed || !callerModel) applying.model = decision.model
     if (markers.found) applying.prompt = markers.stripped
@@ -211,6 +262,15 @@ export function createAdvisor(deps: Deps) {
           agent: p.agent,
           would: p.would,
           model: bareModel(data.model?.id),
+          shadow: p.shadow,
+        })
+        record({
+          v: 1,
+          kind: "link",
+          t: stamp(),
+          session: data.sessionID,
+          parent: data.parentID,
+          decision: p.id,
         })
         if (children.size > MAX_CHILDREN) {
           const oldest = children.keys().next().value
@@ -221,7 +281,8 @@ export function createAdvisor(deps: Deps) {
         if (child && data.model?.id) child.model = bareModel(data.model.id)
       } else if (e.type === "session.step.ended") {
         const child = children.get(data.sessionID)
-        if (!child?.model || child.model === child.would) return
+        if (!child?.shadow || !child.model || child.model === child.would)
+          return
         // OpenCode reports no cost on a subscription account, so price the tokens at list.
         const cost =
           typeof data.cost === "number" && data.cost > 0

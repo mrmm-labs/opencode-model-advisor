@@ -21,6 +21,8 @@
   "files": [
     "index.js",
     "dist",
+    "tui.tsx",
+    "tui/advisor-tui.tsx",
     "model-advisor.example.jsonc"
   ],
   "type": "module",
@@ -32,7 +34,8 @@
       "types": "./dist/index.d.ts",
       "import": "./index.js",
       "default": "./index.js"
-    }
+    },
+    "./tui": "./tui/advisor-tui.tsx"
   },
   "publishConfig": {
     "access": "public",
@@ -41,20 +44,27 @@
   "scripts": {
     "build": "rm -rf dist && tsc",
     "typecheck": "tsc --noEmit",
-    "test": "OPENCODE_MODEL_ADVISOR_LOG=/dev/null node --test --test-timeout=60000 --experimental-strip-types 'src/**/*.test.ts'",
+    "test": "OPENCODE_MODEL_ADVISOR_LOG=/dev/null OPENCODE_MODEL_ADVISOR_DECISIONS=/dev/null node --test --test-timeout=60000 --experimental-strip-types 'src/**/*.test.ts'",
     "test:integration": "pnpm run build && node --experimental-strip-types scripts/integration.ts",
     "smoke:telemetry": "pnpm run build && node --experimental-strip-types scripts/smoke-telemetry.ts",
     "lint": "oxlint && oxfmt --check .",
     "lint:fix": "oxlint --fix . && oxfmt --write .",
     "format": "oxfmt --write .",
-    "prepublishOnly": "pnpm run build && pnpm test"
+    "prepublishOnly": "pnpm run build && pnpm test",
+    "check:tui": "tsc -p tui/tsconfig.json",
+    "test:tui": "pnpm run build && python3 scripts/tui-e2e.py",
+    "check:v2": "pnpm run build && bun tui/runtime-check.ts"
   },
   "devDependencies": {
     "@opencode-ai/plugin": "1.18.31",
     "@opencode/plugin": "2.0.27",
+    "@opentui/core": "^0.5.17",
+    "@opentui/keymap": "^0.5.17",
+    "@opentui/solid": "^0.5.17",
     "@types/node": "^25.5.0",
     "oxfmt": "0.41.0",
     "oxlint": "1.56.0",
+    "solid-js": "^1.9.19",
     "typescript": "^5.0.0"
   },
   "packageManager": "pnpm@10.32.1"

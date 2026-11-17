@@ -1,0 +1,16 @@
+{
+  // Type-checks the TUI entry without letting it into the main build: the
+  // server plugin keeps zero runtime dependencies, and the TUI host loads the
+  // .tsx directly.
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": "..",
+    "jsx": "preserve",
+    "jsxImportSource": "@opentui/solid",
+    "types": ["node"],
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true
+  },
+  "include": ["./*.tsx"]
+}

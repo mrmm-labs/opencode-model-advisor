@@ -11,3 +11,5 @@
 - OpenTelemetry: a `route <agent>` span per decision and `model_advisor.*` metrics, as OTLP/HTTP JSON with no dependencies
 - shadow saving estimate from the routed child session's per-step usage (OpenCode 2)
 - OpenCode 2 and OpenCode 1 entry points
+- TUI: a sidebar line per session, `advisor: mode`, `advisor: pin` and `advisor: decisions` commands, and alert toasts, fed by a bounded `decisions.jsonl` and applied by editing the config file in place
+- decisions are de-duplicated by tool call id, so a plugin loaded once per project instance records each dispatch once

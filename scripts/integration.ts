@@ -37,6 +37,8 @@ type Scenario = {
   dispatch: string
   /** The judge's replayed answer, when the scenario uses the judge. */
   judge?: string
+  /** How many times the plugin is installed, to see a dispatch counted once. */
+  copies?: number
 }
 
 const fail = (message: string): never => {
@@ -274,10 +276,23 @@ async function runScenario(scenario: Scenario) {
   const { server, port } = await replayProvider(scenario, seen)
   const sink = await otlpSink()
 
-  const plugin = join(dirs.config, "opencode", "plugins", "model-advisor")
-  mkdirSync(plugin, { recursive: true })
-  writeFileSync(join(plugin, "index.js"), readFileSync(join(repo, "index.js")))
-  symlinkSync(join(repo, "dist"), join(plugin, "dist"))
+  for (let n = 0; n < (scenario.copies ?? 1); n++) {
+    const plugin = join(
+      dirs.config,
+      "opencode",
+      "plugins",
+      n === 0 ? "model-advisor" : `model-advisor-${n + 1}`,
+    )
+    mkdirSync(plugin, { recursive: true })
+    // OpenCode loads one plugin per id, so a second copy needs its own.
+    writeFileSync(
+      join(plugin, "index.js"),
+      n === 0
+        ? readFileSync(join(repo, "index.js"))
+        : `import plugin from "./dist/index.js"\nexport default { ...plugin, id: "model-advisor-${n + 1}" }\n`,
+    )
+    symlinkSync(join(repo, "dist"), join(plugin, "dist"))
+  }
 
   writeFileSync(
     join(dirs.config, "opencode", "opencode.json"),
@@ -310,6 +325,7 @@ async function runScenario(scenario: Scenario) {
     }),
   )
   const logFile = join(root, "advisor.log")
+  const decisionsFile = join(root, "decisions.jsonl")
 
   const env = {
     ...process.env,
@@ -320,6 +336,7 @@ async function runScenario(scenario: Scenario) {
     XDG_CACHE_HOME: dirs.cache,
     OPENCODE_MODEL_ADVISOR_CONFIG: advisorConfig,
     OPENCODE_MODEL_ADVISOR_LOG: logFile,
+    OPENCODE_MODEL_ADVISOR_DECISIONS: decisionsFile,
   }
   const child = spawn(
     "opencode",
@@ -353,6 +370,12 @@ async function runScenario(scenario: Scenario) {
         .filter(Boolean)
         .map((l) => JSON.parse(l))
     : []
+  const decisions = existsSync(decisionsFile)
+    ? readFileSync(decisionsFile, "utf8")
+        .split("\n")
+        .filter(Boolean)
+        .map((l) => JSON.parse(l))
+    : []
   server.close()
   sink.server.close()
   const result = {
@@ -360,6 +383,7 @@ async function runScenario(scenario: Scenario) {
     output,
     seen,
     log,
+    decisions,
     traces: sink.traces,
     metrics: sink.metrics,
     root,
@@ -411,6 +435,12 @@ async function main() {
     { name: "shadow", config: { mode: "shadow", rules }, dispatch },
     { name: "enforce", config: { mode: "enforce", rules }, dispatch },
     {
+      name: "twice",
+      config: { mode: "shadow", rules },
+      dispatch,
+      copies: 2,
+    },
+    {
       name: "judge",
       config: { mode: "shadow", judge: { enabled: true, timeoutMs: 20000 } },
       dispatch,
@@ -430,6 +460,23 @@ async function main() {
     check(!!loaded, "plugin loaded", r.output.slice(-1500))
     if (loaded) console.log(`  ${JSON.stringify(loaded)}`)
 
+    const mine = r.decisions.filter((x: any) => x.kind === "decision")
+    check(
+      mine.length === 1 && mine[0].agent === "smoke-worker",
+      `decisions.jsonl: one decision line for the one dispatch (${s.copies ?? 1} plugin copies)`,
+      r.decisions,
+    )
+    check(
+      r.decisions.filter((x: any) => x.kind === "link").length === 1 &&
+        r.decisions.find((x: any) => x.kind === "link")?.decision ===
+          mine[0]?.id,
+      "decisions.jsonl: the child session is linked to the decision",
+      r.decisions,
+    )
+    if (s.copies) {
+      const loads = r.log.filter((l) => l.event === "plugin_loaded").length
+      check(loads >= s.copies, `plugin loaded ${loads} times`, r.log)
+    }
     const child = r.seen.find((x) => x.kind === "child")
     check(!!child, "subagent dispatched and answered", r.output.slice(-1500))
     const span = spansOf(r.traces).find((x) => x.name === "route smoke-worker")
