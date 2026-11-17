@@ -29,7 +29,15 @@ import { fileURLToPath } from "node:url"
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..")
 const RUN_TIMEOUT_MS = 90_000
 
-type Seen = { model: string; kind: string; text: string }
+type Seen = {
+  model: string
+  kind: string
+  text: string
+  beta?: string
+  tools?: string[]
+  system?: string
+  history?: string
+}
 type Scenario = {
   name: string
   config: object
@@ -39,6 +47,14 @@ type Scenario = {
   judge?: string
   /** How many times the plugin is installed, to see a dispatch counted once. */
   copies?: number
+  /** Top-level agent to run, `build` by default. */
+  agent?: string
+  /** One opencode run per prompt, all in one session. */
+  turns?: string[]
+  /** Installs a stand-in for the request-hook owner; the advisor hooks run through it. */
+  hooks?: boolean
+  /** Env for the opencode process. */
+  env?: Record<string, string>
 }
 
 const fail = (message: string): never => {
@@ -148,6 +164,14 @@ function lastUser(body: {
   }
 }
 
+async function freePort() {
+  const probe = createServer()
+  await new Promise<void>((r) => probe.listen(0, "127.0.0.1", () => r()))
+  const { port } = probe.address() as AddressInfo
+  await new Promise((r) => probe.close(r))
+  return port
+}
+
 async function replayProvider(scenario: Scenario, seen: Seen[]) {
   const server = createServer(async (req, res) => {
     const raw = await readBody(req)
@@ -160,7 +184,19 @@ async function replayProvider(scenario: Scenario, seen: Seen[]) {
     const tools = (body.tools ?? []).map((t: { name: string }) => t.name)
     let kind = "chat"
     let reply: string
-    if (user.text.includes("You route one coding-agent task")) {
+    const advised = (body.tools ?? []).some(
+      (t: { type?: string }) => t.type === "advisor_20260301",
+    )
+    if (advised) {
+      kind = "advised"
+      reply = readFileSync(
+        join(repo, "src", "fixtures", "advisor-response.sse"),
+        "utf8",
+      )
+    } else if (scenario.turns && user.text.includes("ADVISED")) {
+      kind = "unadvised"
+      reply = stream(body.model, [{ type: "text", text: "ok" }], "end_turn")
+    } else if (user.text.includes("You route one coding-agent task")) {
       kind = "judge"
       reply = stream(
         body.model,
@@ -213,7 +249,18 @@ async function replayProvider(scenario: Scenario, seen: Seen[]) {
       kind = "other"
       reply = stream(body.model, [{ type: "text", text: "ok" }], "end_turn")
     }
-    seen.push({ model: body.model, kind, text: user.text })
+    const system = JSON.stringify(body.system ?? "")
+    seen.push({
+      model: body.model,
+      kind,
+      text: user.text,
+      beta: String(req.headers["anthropic-beta"] ?? ""),
+      tools: (body.tools ?? []).map(
+        (t: { type?: string; name: string }) => t.type ?? t.name,
+      ),
+      system,
+      history: JSON.stringify(body.messages ?? []),
+    })
     res.writeHead(200, { "content-type": "text/event-stream" })
     res.end(reply)
   })
@@ -273,6 +320,7 @@ async function runScenario(scenario: Scenario) {
   for (const d of Object.values(dirs)) mkdirSync(d, { recursive: true })
 
   const seen: Seen[] = []
+  const stubPort = scenario.hooks ? await freePort() : 0
   const { server, port } = await replayProvider(scenario, seen)
   const sink = await otlpSink()
 
@@ -302,7 +350,10 @@ async function runScenario(scenario: Scenario) {
         advreplay: {
           name: "Replay",
           package: "@opencode/ai/providers/anthropic",
-          settings: { baseURL: `http://127.0.0.1:${port}/v1`, apiKey: "x" },
+          settings: {
+            baseURL: `http://127.0.0.1:${stubPort || port}/v1`,
+            apiKey: "x",
+          },
           models: {
             "claude-haiku-5-5": model("claude-haiku-5-5"),
             "claude-sonnet-5-5": model("claude-sonnet-5-5"),
@@ -312,9 +363,18 @@ async function runScenario(scenario: Scenario) {
       },
       agents: {
         "smoke-worker": { mode: "subagent", description: "Replay worker" },
+        "smoke-primary": { mode: "primary", description: "Replay primary" },
       },
     }),
   )
+  if (scenario.hooks) {
+    const stub = join(dirs.config, "opencode", "plugins", "request-hooks-stub")
+    mkdirSync(stub, { recursive: true })
+    writeFileSync(
+      join(stub, "index.js"),
+      readFileSync(join(repo, "scripts", "request-hooks-stub.js")),
+    )
+  }
   const advisorConfig = join(root, "model-advisor.jsonc")
   writeFileSync(
     advisorConfig,
@@ -337,31 +397,45 @@ async function runScenario(scenario: Scenario) {
     OPENCODE_MODEL_ADVISOR_CONFIG: advisorConfig,
     OPENCODE_MODEL_ADVISOR_LOG: logFile,
     OPENCODE_MODEL_ADVISOR_DECISIONS: decisionsFile,
+    STUB_UPSTREAM: `http://127.0.0.1:${port}/v1`,
+    STUB_PORT: String(stubPort),
+    ...scenario.env,
   }
-  const child = spawn(
-    "opencode",
-    [
-      "run",
-      "--standalone",
-      "--auto",
-      "--model",
-      "advreplay/claude-sonnet-5-5",
-      "--agent",
-      "build",
-      "DISPATCH-ME please",
-    ],
-    { cwd: dirs.work, env, stdio: ["ignore", "pipe", "pipe"] },
-  )
-  let output = ""
-  child.stdout.on("data", (c) => (output += c))
-  child.stderr.on("data", (c) => (output += c))
-  const code = await new Promise<number | null>((done) => {
-    const timer = setTimeout(
-      () => (child.kill("SIGKILL"), done(null)),
-      RUN_TIMEOUT_MS,
+  const turns = scenario.turns ?? ["DISPATCH-ME please"]
+  const outputs: string[] = []
+  const codes: Array<number | null> = []
+  for (const prompt of turns) {
+    const child = spawn(
+      "opencode",
+      [
+        "run",
+        "--standalone",
+        "--auto",
+        "--model",
+        "advreplay/claude-sonnet-5-5",
+        "--agent",
+        scenario.agent ?? "build",
+        ...(scenario.turns ? ["--session", "ses_advisor_it"] : []),
+        prompt,
+      ],
+      { cwd: dirs.work, env, stdio: ["ignore", "pipe", "pipe"] },
     )
-    child.on("exit", (c) => (clearTimeout(timer), done(c)))
-  })
+    let text = ""
+    child.stdout.on("data", (c) => (text += c))
+    child.stderr.on("data", (c) => (text += c))
+    codes.push(
+      await new Promise<number | null>((done) => {
+        const timer = setTimeout(
+          () => (child.kill("SIGKILL"), done(null)),
+          RUN_TIMEOUT_MS,
+        )
+        child.on("exit", (c) => (clearTimeout(timer), done(c)))
+      }),
+    )
+    outputs.push(text)
+  }
+  const code = codes.at(-1) ?? null
+  const output = outputs.join("\n")
   await new Promise((r) => setTimeout(r, 500))
 
   const log = existsSync(logFile)
@@ -380,6 +454,8 @@ async function runScenario(scenario: Scenario) {
   sink.server.close()
   const result = {
     code,
+    codes,
+    outputs,
     output,
     seen,
     log,
@@ -418,6 +494,105 @@ const check = (ok: boolean, label: string, detail?: unknown) => {
   }
 }
 
+const advisorTurns = [
+  "ADVISED turn one: review the migration plan",
+  "ADVISED turn two: and the rollback?",
+]
+const advisorConfig = {
+  mode: "enforce",
+  advisor: { enabled: true, maxUses: 2 },
+}
+
+/** Two turns in one session, the executor advised on both: the spec's test C. */
+function checkAdvisor(s: Scenario, r: Awaited<ReturnType<typeof runScenario>>) {
+  const advised = r.seen.filter((x) => x.kind === "advised")
+  console.log(
+    `opencode exits=${r.codes.join(",")}; replay saw: ${r.seen.map((x) => `${x.kind}@${x.model}`).join(", ")}`,
+  )
+  if (s.env?.STUB_SKIP_RESPONSE_HOOKS) {
+    check(
+      r.codes[0] === 0,
+      "control, no stream filter: turn 1 answers",
+      r.outputs[0],
+    )
+    check(
+      r.codes[1] !== 0 && /round-trip server tool result/.test(r.outputs[1]),
+      "control, no stream filter: turn 2 fails with the round-trip error",
+      r.outputs[1].slice(-600),
+    )
+    return
+  }
+  check(
+    r.codes.length === 2 && r.codes.every((c) => c === 0),
+    "both turns of the session succeed",
+    r.outputs.map((o) => o.slice(-600)),
+  )
+  check(
+    advised.length === 2,
+    "both turns reached the provider with the advisor attached",
+    r.seen.map((x) => [x.kind, x.tools]),
+  )
+  const first = advised[0]
+  check(
+    first?.tools?.at(-1) === "advisor_20260301" && first.tools.length > 1,
+    "tool advisor_20260301 appended to the tool list",
+    first?.tools,
+  )
+  check(
+    first?.beta.split(",").includes("advisor-tool-2026-03-01") === true,
+    "anthropic-beta carries advisor-tool-2026-03-01",
+    first?.beta,
+  )
+  check(
+    first?.system?.includes("advisor tool") === true,
+    "system prompt carries the consult-the-advisor line",
+  )
+  check(
+    advised[1]?.history?.includes("advisor_tool_result") === false &&
+      advised[1]?.history?.includes('"name":"advisor"') === false,
+    "turn 2 history holds no advisor blocks",
+  )
+  check(
+    advised[1]?.history?.includes("not safe as written") === true,
+    "turn 2 history holds the executor's answer from turn 1",
+  )
+  check(
+    r.outputs.every((o) => o.includes("not safe as written")),
+    "the answer is shown on both turns",
+    r.outputs.map((o) => o.slice(-300)),
+  )
+  const advice = r.decisions.filter((x: any) => x.kind === "advice")
+  check(
+    advice.length === 2 &&
+      advice.every((a: any) => a.calls === 1 && a.attached),
+    "decisions.jsonl: one advice line per turn, one advisor call each",
+    r.decisions,
+  )
+  const names = metricsOf(r.metrics).map((m) => m.name)
+  for (const name of [
+    "model_advisor.advisor.calls",
+    "model_advisor.advisor.tokens",
+    "model_advisor.advisor.cost_usd",
+  ])
+    check(names.includes(name), `metric ${name} exported`, names)
+  const span = spansOf(r.traces).find((x) => x.name === "advisor smoke-primary")
+  check(!!span, "span `advisor smoke-primary` exported", r.log)
+  if (span) {
+    check(
+      Number(attr(span, "advisor.calls")) === 1 &&
+        Number(attr(span, "advisor.input_tokens")) === 29025 &&
+        Number(attr(span, "advisor.output_tokens")) === 1763,
+      "span advisor.calls / input_tokens / output_tokens from the stream",
+      span,
+    )
+    const cost = Number(attr(span, "advisor.cost_usd"))
+    check(
+      Math.abs(cost - (29025 * 5 + 1763 * 25) / 1e6) < 1e-9,
+      `span advisor.cost_usd = ${cost.toFixed(6)} (Opus list price)`,
+    )
+  }
+}
+
 const rules = [
   { id: "workers-on-haiku", when: { agent: "smoke-worker" }, tier: "haiku" },
 ]
@@ -435,6 +610,23 @@ async function main() {
     { name: "shadow", config: { mode: "shadow", rules }, dispatch },
     { name: "enforce", config: { mode: "enforce", rules }, dispatch },
     {
+      name: "advisor",
+      config: advisorConfig,
+      dispatch,
+      turns: advisorTurns,
+      agent: "smoke-primary",
+      hooks: true,
+    },
+    {
+      name: "advisor-no-filter",
+      config: advisorConfig,
+      dispatch,
+      turns: advisorTurns,
+      agent: "smoke-primary",
+      hooks: true,
+      env: { STUB_SKIP_RESPONSE_HOOKS: "1" },
+    },
+    {
       name: "twice",
       config: { mode: "shadow", rules },
       dispatch,
@@ -451,6 +643,11 @@ async function main() {
   for (const s of scenarios) {
     console.log(`\n── ${s.name} ─────────────────────────────`)
     const r = await runScenario(s)
+    if (s.turns) {
+      checkAdvisor(s, r)
+      rmSync(r.root, { recursive: true, force: true })
+      continue
+    }
     const events = r.log.map((l) => l.event)
     console.log(
       `opencode exit=${r.code}; replay saw: ${r.seen.map((x) => `${x.kind}@${x.model}`).join(", ")}`,
