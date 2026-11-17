@@ -1,0 +1,53 @@
+// Copy to ~/.config/opencode/model-advisor.jsonc. Read again on every change.
+{
+  // shadow: record what would be chosen, change nothing. enforce: set the model.
+  "mode": "shadow",
+
+  // Provider id used when a tier names a bare model id.
+  "provider": "anthropic",
+
+  // Cheapest first: this order is the escalation ladder.
+  "tiers": {
+    "haiku": "claude-haiku-5-5",
+    "sonnet": "claude-sonnet-5-5",
+    "opus": "claude-opus-5-5",
+  },
+  "default": "sonnet",
+
+  // Never routed: they keep their own model.
+  "orchestrators": ["build", "plan", "coordinator"],
+
+  // Operator pins beat everything. Key: an agent name, or "session:<id>".
+  "pins": {},
+
+  // First match wins. All conditions of a rule must hold.
+  "rules": [
+    {
+      "id": "critical",
+      "when": { "hint.tier": ["high", "critical"] },
+      "tier": "opus",
+    },
+    {
+      "id": "risky-area",
+      "when": { "prompt": "(?i)\\b(auth|security|migration|secret|crypto)\\b" },
+      "tier": "opus",
+    },
+    { "id": "big", "when": { "hint.files": ">=15" }, "tier": "opus" },
+    {
+      "id": "review-security",
+      "when": { "agent": ["reviewer-security", "approver"] },
+      "tier": "opus",
+    },
+    {
+      "id": "read-only",
+      "when": { "agent": ["explore", "investigator"] },
+      "tier": "sonnet",
+    },
+  ],
+
+  // Asked only when no rule matched. One short model call per dispatch.
+  "judge": { "enabled": false, "model": "claude-haiku-5-5", "timeoutMs": 8000 },
+
+  // OTLP/HTTP base URL. Falls back to OTEL_EXPORTER_OTLP_ENDPOINT; off when neither is set.
+  "otel": { "endpoint": "http://127.0.0.1:4318" },
+}

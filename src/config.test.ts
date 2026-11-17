@@ -1,5 +1,11 @@
 import assert from "node:assert/strict"
-import { mkdtempSync, rmSync, writeFileSync, utimesSync } from "node:fs"
+import {
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+  utimesSync,
+} from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, it } from "node:test"
@@ -14,6 +20,7 @@ import {
   qualify,
   resolveTier,
 } from "./config.ts"
+import { parseJsonc } from "./jsonc.ts"
 
 const input = (
   over: Partial<{ agent: string; prompt: string; hint: object }> = {},
@@ -195,5 +202,18 @@ describe("ConfigStore", () => {
       configPath({ XDG_CONFIG_HOME: "/cfg" }),
       join("/cfg", "opencode", "model-advisor.jsonc"),
     )
+  })
+})
+
+describe("example config", () => {
+  it("parses without warnings", () => {
+    const text = readFileSync(
+      new URL("../model-advisor.example.jsonc", import.meta.url),
+      "utf8",
+    )
+    const { config, warnings } = buildConfig(parseJsonc(text))
+    assert.deepEqual(warnings, [])
+    assert.equal(config.mode, "shadow")
+    assert.equal(config.rules.length, 5)
   })
 })
