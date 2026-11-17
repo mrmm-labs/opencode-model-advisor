@@ -120,13 +120,13 @@ estimated cost). Switch with one config key or the TUI command.
   harness side, outside this repo).
 - **Claude Code**: not in scope; it has `/advisor` and per-subagent `model` natively.
 
-## QMS factory integration (consumer, outside this repo)
+## Example consumer: a ticket-driven agent factory
 
 - The coordinator adds the hint line to every builder/reviewer dispatch: `task` = ticket
-  number, `tier` = the ticket's `tier:` label, `retry` = number of FAIL verdicts or rejected
+  number, `tier` = the ticket's tier label, `retry` = number of failed verdicts or rejected
   reviews for that ticket so far, `files` = planned file count when known.
-- Coordinator and approver keep Opus (orchestrator list / rule).
-- `factory_usage.py check` reads `route.*` and `advisor.*` from the usage log to report the mix.
+- The coordinator and approver keep Opus (orchestrator list / rule).
+- The factory's usage report reads `route.*` and `advisor.*` from the usage log to show the mix.
 
 ## First step: spike (30 min)
 
