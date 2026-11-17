@@ -1,0 +1,61 @@
+{
+  "name": "opencode-model-advisor",
+  "version": "0.0.0",
+  "description": "OpenCode plugin that picks the model for each subagent dispatch, with rules, an optional Haiku judge and OpenTelemetry spans and metrics.",
+  "keywords": [
+    "anthropic",
+    "model-routing",
+    "opencode",
+    "opentelemetry",
+    "plugin"
+  ],
+  "homepage": "https://github.com/mrmm-labs/opencode-model-advisor#readme",
+  "bugs": {
+    "url": "https://github.com/mrmm-labs/opencode-model-advisor/issues"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mrmm-labs/opencode-model-advisor.git"
+  },
+  "files": [
+    "index.js",
+    "dist",
+    "model-advisor.example.jsonc"
+  ],
+  "type": "module",
+  "main": "index.js",
+  "module": "index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./index.js",
+      "default": "./index.js"
+    }
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test --test-timeout=60000 --experimental-strip-types 'src/**/*.test.ts'",
+    "test:integration": "pnpm run build && node --experimental-strip-types scripts/integration.ts",
+    "smoke:telemetry": "pnpm run build && node --experimental-strip-types scripts/smoke-telemetry.ts",
+    "lint": "oxlint && oxfmt --check .",
+    "lint:fix": "oxlint --fix . && oxfmt --write .",
+    "format": "oxfmt --write .",
+    "prepublishOnly": "pnpm run build && pnpm test"
+  },
+  "devDependencies": {
+    "@opencode-ai/plugin": "1.18.31",
+    "@opencode/plugin": "2.0.27",
+    "@types/node": "^25.5.0",
+    "oxfmt": "0.41.0",
+    "oxlint": "1.56.0",
+    "typescript": "^5.0.0"
+  },
+  "packageManager": "pnpm@10.32.1"
+}
