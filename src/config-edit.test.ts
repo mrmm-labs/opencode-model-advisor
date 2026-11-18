@@ -5,7 +5,17 @@ import { join } from "node:path"
 import { describe, it } from "node:test"
 
 import { buildConfig } from "./config.ts"
-import { readPins, setJsoncValue, setMode, setPin } from "./config-edit.ts"
+import {
+  editValidated,
+  getAt,
+  parsePath,
+  readPins,
+  setAt,
+  setJsoncPath,
+  setJsoncValue,
+  setMode,
+  setPin,
+} from "./config-edit.ts"
 import { parseJsonc } from "./jsonc.ts"
 
 const FILE = `// header comment
@@ -111,5 +121,225 @@ describe("config edit", () => {
       (parseJsonc(out as string) as { mode: string }).mode,
       "enforce",
     )
+  })
+})
+
+const V2 = `{
+  // mode note
+  "mode": "shadow",
+  "v2": {
+    // the levels
+    "levels": { "fast": { "model": "a/b" }, "frontier": { "model": "c/d" } },
+    "difficulty": {
+      "points": [
+        { "fact": "files", "gte": 15, "add": 2 }, // first
+        { "fact": "modules", "gte": 3, "add": 2 },
+      ],
+      "cutoffs": { "medium": 2, "high": 4 },
+    },
+  },
+}
+`
+
+describe("nested path edit", () => {
+  const read = (t: string | null) => parseJsonc(t as string) as any
+
+  it("sets a nested value and keeps comments", () => {
+    const out = setJsoncPath(V2, ["v2", "difficulty", "cutoffs", "high"], 5)
+    assert.equal(read(out).v2.difficulty.cutoffs.high, 5)
+    assert.ok(out?.includes("// the levels"))
+    assert.ok(out?.includes("// first"))
+    assert.ok(out?.includes("// mode note"))
+  })
+
+  it("replaces an array element by index and appends at the end", () => {
+    let out = setJsoncPath(V2, ["v2", "difficulty", "points", 1], {
+      fact: "files",
+      gte: 1,
+      add: 1,
+    })
+    assert.deepEqual(read(out).v2.difficulty.points[1], {
+      fact: "files",
+      gte: 1,
+      add: 1,
+    })
+    out = setJsoncPath(V2, ["v2", "difficulty", "points", 2], { fact: "x" })
+    assert.equal(read(out).v2.difficulty.points.length, 3)
+    assert.equal(read(out).v2.difficulty.points[2].fact, "x")
+    assert.ok(out?.includes("// first"))
+    assert.equal(
+      setJsoncPath(V2, ["v2", "difficulty", "points", 5], { fact: "x" }),
+      null,
+    )
+  })
+
+  it("deletes an element and a key, even the last one", () => {
+    let out = setJsoncPath(V2, ["v2", "difficulty", "points", 0], undefined)
+    assert.deepEqual(
+      read(out).v2.difficulty.points.map((p: any) => p.fact),
+      ["modules"],
+    )
+    out = setJsoncPath(
+      out as string,
+      ["v2", "difficulty", "points", 0],
+      undefined,
+    )
+    assert.deepEqual(read(out).v2.difficulty.points, [])
+    out = setJsoncPath(V2, ["v2", "levels", "frontier"], undefined)
+    assert.deepEqual(Object.keys(read(out).v2.levels), ["fast"])
+    out = setJsoncPath(V2, ["v2", "levels", "fast"], undefined)
+    assert.deepEqual(Object.keys(read(out).v2.levels), ["frontier"])
+    assert.equal(setJsoncPath(V2, ["v2", "nope"], undefined), V2)
+  })
+
+  it("creates missing parent objects, not missing arrays", () => {
+    const out = setJsoncPath(
+      '{\n  "mode": "shadow"\n}\n',
+      ["v2", "policy", "retryStep"],
+      2,
+    )
+    assert.equal(read(out).v2.policy.retryStep, 2)
+    assert.equal(read(out).mode, "shadow")
+    assert.equal(
+      setJsoncPath('{"v2": {}}', ["v2", "difficulty", "points", 0], 1),
+      null,
+    )
+    assert.equal(
+      read(setJsoncPath("{}", ["v2", "enabled"], true)).v2.enabled,
+      true,
+    )
+    assert.equal(
+      read(setJsoncPath('{"v2": {}}', ["v2", "enabled"], true)).v2.enabled,
+      true,
+    )
+  })
+
+  it("ignores a key that only appears in a comment or a string", () => {
+    const text =
+      '{\n  // "v2": { "x": 1 }\n  "note": "\\"v2\\"", "v2": { "x": 0 }\n}'
+    const out = setJsoncPath(text, ["v2", "x"], 7)
+    assert.equal(read(out).v2.x, 7)
+    assert.ok(out?.includes('// "v2": { "x": 1 }'))
+  })
+
+  it("returns null for malformed text or a wrong parent", () => {
+    assert.equal(setJsoncPath("[1", ["a"], 1), null)
+    assert.equal(setJsoncPath('{"a": 1}', ["a", "b"], 1), null)
+    assert.equal(setJsoncPath('{"a": [1]}', ["a", "x"], 1), null)
+    assert.equal(setJsoncPath("{}", [], 1), null)
+  })
+
+  it("parses and walks paths", () => {
+    assert.deepEqual(parsePath("v2.difficulty.points[1].add"), [
+      "v2",
+      "difficulty",
+      "points",
+      1,
+      "add",
+    ])
+    assert.deepEqual(parsePath("a.0.b"), ["a", 0, "b"])
+    assert.equal(getAt({ a: [{ b: 3 }] }, ["a", 0, "b"]), 3)
+    assert.equal(getAt({ a: 1 }, ["a", "b"]), undefined)
+    const src = { a: [1, 2, 3], b: { c: 1 } }
+    assert.deepEqual(setAt(src, ["a", 1], 9), { a: [1, 9, 3], b: { c: 1 } })
+    assert.deepEqual(setAt(src, ["a", 0], undefined), {
+      a: [2, 3],
+      b: { c: 1 },
+    })
+    assert.deepEqual(setAt(src, ["b", "c"], undefined), { a: [1, 2, 3], b: {} })
+    assert.deepEqual(src, { a: [1, 2, 3], b: { c: 1 } })
+  })
+})
+
+describe("validated edit", () => {
+  const backups = (f: { dir: string }) =>
+    readdirSync(f.dir).filter((n) => n.includes(".bak-"))
+
+  it("backs up the file, then writes", () => {
+    const f = fixture(V2)
+    const r = editValidated(["v2", "difficulty", "cutoffs", "high"], 6, f.path)
+    assert.equal(r.ok, true)
+    assert.equal(backups(f).length, 1)
+    assert.equal(readFileSync(join(f.dir, backups(f)[0]!), "utf8"), V2)
+    assert.equal(
+      getAt(parseJsonc(f.read()), ["v2", "difficulty", "cutoffs", "high"]),
+      6,
+    )
+    assert.ok(f.read().includes("// the levels"))
+  })
+
+  it("refuses an invalid config and leaves the file and the folder alone", () => {
+    const f = fixture(V2)
+    const r = editValidated(["mode"], "bogus", f.path)
+    assert.equal(r.ok, false)
+    assert.match((r as { reason: string }).reason, /mode must be/)
+    assert.equal(f.read(), V2)
+    assert.equal(backups(f).length, 0)
+  })
+
+  it("does not blame an edit for a warning the file already had", () => {
+    const f = fixture('{"mode": "bogus", "tui": {}}')
+    const r = editValidated(["tui", "position"], "bottom", f.path)
+    assert.equal(r.ok, true)
+  })
+
+  it("refuses text it cannot parse", () => {
+    const f = fixture("{ nope")
+    const r = editValidated(["mode"], "enforce", f.path)
+    assert.equal(r.ok, false)
+    assert.equal(f.read(), "{ nope")
+  })
+
+  it("falls back to the whole section when the file lacks the array", () => {
+    const f = fixture('{\n  "mode": "shadow"\n}\n')
+    const effective = {
+      v2: {
+        difficulty: {
+          points: [{ fact: "files", add: 1 }],
+          cutoffs: { medium: 2, high: 4 },
+        },
+      },
+    }
+    const r = editValidated(
+      ["v2", "difficulty", "points", 0, "add"],
+      3,
+      f.path,
+      effective,
+    )
+    assert.equal(r.ok, true)
+    const out = parseJsonc(f.read()) as any
+    assert.equal(out.v2.difficulty.points[0].add, 3)
+    assert.equal(out.v2.difficulty.cutoffs.high, 4)
+    assert.equal(out.mode, "shadow")
+    assert.equal(
+      editValidated(["v2", "difficulty", "points", 0, "add"], 3, f.path).ok,
+      true,
+    )
+  })
+
+  it("writes the whole section when the file lacks it, so none is half there", () => {
+    const f = fixture('{\n  "mode": "shadow"\n}\n')
+    const effective = {
+      v2: { difficulty: { points: [], cutoffs: { medium: 2, high: 4 } } },
+    }
+    const r = editValidated(
+      ["v2", "difficulty", "cutoffs", "high"],
+      6,
+      f.path,
+      effective,
+    )
+    assert.equal(r.ok, true)
+    const out = parseJsonc(f.read()) as any
+    assert.deepEqual(out.v2.difficulty, {
+      points: [],
+      cutoffs: { medium: 2, high: 6 },
+    })
+  })
+
+  it("creates a missing file without a backup", () => {
+    const dir = mkdtempSync(join(tmpdir(), "advisor-edit-"))
+    const path = join(dir, "x.jsonc")
+    assert.deepEqual(editValidated(["mode"], "enforce", path), { ok: true })
+    assert.equal(readdirSync(dir).length, 1)
   })
 })
