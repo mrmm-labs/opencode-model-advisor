@@ -32,7 +32,7 @@ const dir = () => mkdtempSync(join(tmpdir(), "advisor-calibrate-"))
 
 const cfg = (): RoutingV2Config => {
   const c = defaultRoutingV2()
-  c.calibration = { minFirstPass: 0.7, minTasks: 2 }
+  c.calibration = { minFirstPass: 0.7, minTasks: 2, retryAgents: ["builder"] }
   return c
 }
 
@@ -162,6 +162,18 @@ describe("task math", () => {
     assert.equal(by["4"]!.retries, 2)
     assert.equal(by["4"]!.cost, null)
     assert.deepEqual([by["5"]!.retries, by["5"]!.firstPass], [2, false])
+  })
+
+  it("does not count review rounds as retries, unless every agent counts", () => {
+    const specs: Spec[] = [
+      { task: "r", files: 1, agents: ["builder", "reviewer", "reviewer"] },
+    ]
+    const recs = specs.flatMap((s, i) => records(s, i * 10))
+    const t = collectTasks(recs, undefined, cfg(), { score })[0]!
+    assert.deepEqual([t.retries, t.firstPass], [0, true])
+    const all = cfg()
+    all.calibration.retryAgents = []
+    assert.equal(collectTasks(recs, undefined, all, { score })[0]!.retries, 1)
   })
 
   it("skips decisions without a task and outside the window", () => {
@@ -305,8 +317,20 @@ const actionable = (c: Calibration) =>
 describe("suggestions", () => {
   const weak: Spec[] = [
     { task: "a", files: 1, risk: "low", level: "fast" },
-    { task: "b", files: 1, risk: "low", level: "fast", agents: ["x", "x"] },
-    { task: "c", files: 1, risk: "low", level: "fast", agents: ["x", "x"] },
+    {
+      task: "b",
+      files: 1,
+      risk: "low",
+      level: "fast",
+      agents: ["builder", "builder"],
+    },
+    {
+      task: "c",
+      files: 1,
+      risk: "low",
+      level: "fast",
+      agents: ["builder", "builder"],
+    },
   ]
 
   it("suggests the next level up when first-pass is under the floor", () => {

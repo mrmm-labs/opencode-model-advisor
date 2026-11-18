@@ -187,7 +187,7 @@ export function linkedSessions(
 /**
  * One entry per task seen in the window. Difficulty, risk and level come from the task's first
  * dispatch (the routing the matrix decided; retries step up from it). A task is first-pass when
- * no agent was dispatched twice and no retry fact was above zero.
+ * no `calibration.retryAgents` agent was dispatched twice and no retry fact was above zero.
  */
 export function collectTasks(
   records: AdvisorRecord[],
@@ -213,10 +213,12 @@ export function collectTasks(
     const first = list[0]!
     const risk = riskOf(first, cfg)
     const facts = first.v2?.facts ?? v1Facts(first as Loose, risk)
+    const counted = cfg.calibration.retryAgents ?? []
     const perAgent = new Map<string, number>()
     for (const d of list)
-      perAgent.set(d.agent, (perAgent.get(d.agent) ?? 0) + 1)
-    const extra = Math.max(...[...perAgent.values()].map((n) => n - 1))
+      if (!counted.length || counted.includes(d.agent))
+        perAgent.set(d.agent, (perAgent.get(d.agent) ?? 0) + 1)
+    const extra = Math.max(0, ...[...perAgent.values()].map((n) => n - 1))
     const retries = Math.max(extra, ...list.map(retryOf))
     let cost: number | null = null
     if (costs)

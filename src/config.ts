@@ -482,6 +482,10 @@ function buildV2(
       v2.calibration.minTasks = c.minTasks
     else if (c.minTasks !== undefined)
       warn("v2.calibration.minTasks must be a positive integer")
+    const agents = strings(c.retryAgents)
+    if (agents) v2.calibration.retryAgents = agents
+    else if (c.retryAgents !== undefined)
+      warn("v2.calibration.retryAgents must be a list of agent names")
   } else if (raw.calibration !== undefined)
     warn("v2.calibration must be an object")
 

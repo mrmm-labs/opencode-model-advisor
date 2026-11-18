@@ -81,6 +81,10 @@ Written atomically to `$OPENCODE_MODEL_ADVISOR_CALIBRATION`, else
 (default 5) live under `v2.calibration`. Treat a suggestion as a prompt to look, not an order: a
 small sample or a few unlucky tasks can trip it.
 
+A task counts as retried when an agent in `v2.calibration.retryAgents` (default `["builder"]`) was
+dispatched for it more than once, or a retry fact was above zero. Review rounds re-run reviewers on
+purpose, so they are not counted; set the list to `[]` to count every agent.
+
 When a run has at least one `matrix` or `cutoff` suggestion it appends one `alert` record
 (`alert: "calibration"`) to the decisions log, so the sidebar can show it. `info` alone does not
 raise an alert.
