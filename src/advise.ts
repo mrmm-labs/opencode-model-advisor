@@ -23,6 +23,11 @@ export const TOOL_TYPE = "advisor_20260301"
 export const SYSTEM_LINE =
   "You have an advisor tool backed by a stronger model. Consult it before committing to an approach, when an error repeats, and before declaring the task done."
 
+export const TOOL_SYSTEM_LINE =
+  "You have an `advisor` tool backed by a stronger model. Call it with one focused question before committing to an approach, when an error repeats, and before declaring the task done."
+/** Opens every advisor-tool prompt; the policy leaves those requests alone. */
+export const ADVISOR_MARK = "You are the advisor to a coding agent"
+
 export type HookRequest = {
   url: string
   body: Record<string, unknown>
@@ -60,6 +65,78 @@ export function rankOf(model: string, config: Config): number | undefined {
   return at < 0 ? undefined : at
 }
 
+export type AdvisorImpl = "native" | "tool" | "none"
+
+const isAnthropic = (model: string): boolean => {
+  const slash = model.indexOf("/")
+  return slash < 0
+    ? /^claude/i.test(model)
+    : model.slice(0, slash).toLowerCase() === "anthropic"
+}
+
+/** The advisor's model: the advisor level's model with routing v2 on, else `advisor.model`. */
+export const advisorModelOf = (config: Config): string | undefined =>
+  config.v2.enabled
+    ? config.v2.levels[config.v2.advisor.level]?.model
+    : config.advisor.model
+
+/** Position of a model on the v2 level ladder: a level's model id, else the level name in the id. */
+export function levelRank(model: string, config: Config): number | undefined {
+  const { levels, levelOrder } = config.v2
+  const bare = bareModel(model).toLowerCase()
+  const at = levelOrder.findIndex(
+    (l) =>
+      bareModel(levels[l]?.model).toLowerCase() === bare ||
+      bare.includes(l.toLowerCase()),
+  )
+  return at < 0 ? undefined : at
+}
+
+/**
+ * How the advisor reaches this executor: the native server tool, the plugin
+ * tool, or not at all. With v2 off it is the v1 rule (native when the executor
+ * ranks below the advisor tier); with v2 on, levels decide and a pairing the API
+ * refused (`refused`, "executor|advisor" bare ids) falls back to the tool.
+ */
+export function advisorImpl(
+  executor: string,
+  config: Config,
+  refused: ReadonlySet<string> = new Set(),
+): AdvisorImpl {
+  if (!config.advisor.enabled) return "none"
+  if (!config.v2.enabled) {
+    const mine = rankOf(executor, config)
+    const theirs = rankOf(config.advisor.model, config)
+    return mine === undefined || theirs === undefined || mine >= theirs
+      ? "none"
+      : "native"
+  }
+  const advisor = advisorModelOf(config)
+  const theirs = config.v2.levelOrder.indexOf(config.v2.advisor.level)
+  const mine = levelRank(executor, config)
+  if (!advisor || theirs < 0 || mine === undefined || mine >= theirs)
+    return "none"
+  const { impl } = config.v2.advisor
+  if (impl !== "auto") return impl
+  const pair = `${bareModel(executor)}|${bareModel(advisor)}`
+  return isAnthropic(executor) && isAnthropic(advisor) && !refused.has(pair)
+    ? "native"
+    : "tool"
+}
+
+/** True when the plugin `advisor` tool should be offered to this executor right now. */
+export const toolActive = (
+  executor: string | undefined,
+  agent: string | undefined,
+  config: Config,
+  refused?: ReadonlySet<string>,
+): boolean =>
+  config.v2.enabled &&
+  config.mode === "enforce" &&
+  !skipReason(agent, config) &&
+  !!executor &&
+  advisorImpl(executor, config, refused) === "tool"
+
 export const estimateTokens = (body: Json): number =>
   Math.ceil(JSON.stringify(body).length / CHARS_PER_TOKEN)
 
@@ -92,9 +169,8 @@ function addSystemLine(body: Json): void {
   } else body.system = [{ type: "text", text: SYSTEM_LINE }]
 }
 
-function dropSystemLine(body: Json): void {
-  const strip = (t: string) =>
-    t.replace(`\n\n${SYSTEM_LINE}`, "").replace(SYSTEM_LINE, "")
+function dropSystemLine(body: Json, line = SYSTEM_LINE): void {
+  const strip = (t: string) => t.replace(`\n\n${line}`, "").replace(line, "")
   if (typeof body.system === "string") body.system = strip(body.system)
   else if (Array.isArray(body.system))
     body.system = body.system
@@ -113,6 +189,18 @@ export function withoutAdvisor(body: Json): Json {
   }
   dropSystemLine(copy)
   return copy
+}
+
+/** Removes the plugin `advisor` function tool (not the native one) and its system line, in place. */
+function dropPluginTool(body: Json): void {
+  if (!Array.isArray(body.tools)) return
+  const kept = body.tools.filter(
+    (t: Json) => !(t?.name === "advisor" && t?.type !== TOOL_TYPE),
+  )
+  if (kept.length === body.tools.length) return
+  if (kept.length) body.tools = kept
+  else delete body.tools
+  dropSystemLine(body, TOOL_SYSTEM_LINE)
 }
 
 /** True when the last message starts a turn rather than returning tool results. */
@@ -175,14 +263,15 @@ export function createAdvise(deps: AdviseDeps) {
 
   function before(req: HookRequest): void {
     const config = deps.config()
+    if (config.v2.enabled && !toolActive(req.model, req.agent, config, refused))
+      dropPluginTool(req.body)
     const a = config.advisor
     if (!a.enabled || !req.agent || skipReason(req.agent, config)) return
-    const mine = rankOf(req.model, config)
-    const theirs = rankOf(a.model, config)
-    if (mine === undefined || theirs === undefined || mine >= theirs) return
+    if (advisorImpl(req.model, config, refused) !== "native") return
+    const advisorModel = advisorModelOf(config) as string
     const text = JSON.stringify(req.body)
-    if (text.includes(JUDGE_MARK)) return
-    const pair = `${bareModel(req.model)}|${bareModel(a.model)}`
+    if (text.includes(JUDGE_MARK) || text.includes(ADVISOR_MARK)) return
+    const pair = `${bareModel(req.model)}|${bareModel(advisorModel)}`
     const tooBig = text.length / CHARS_PER_TOKEN > a.maxContextTokens
     const ok = !refused.has(pair) && !tooBig
 
@@ -219,7 +308,7 @@ export function createAdvise(deps: AdviseDeps) {
         {
           type: TOOL_TYPE,
           name: "advisor",
-          model: a.model,
+          model: advisorModel,
           max_uses: a.maxUses,
         },
       ]
@@ -235,7 +324,7 @@ export function createAdvise(deps: AdviseDeps) {
     start: number,
   ): Promise<void> {
     const agent = req.agent ?? "unknown"
-    const model = usage.model ?? config.advisor.model
+    const model = usage.model ?? (advisorModelOf(config) as string)
     // The advisor reads the transcript uncached, so list price covers it.
     const cost =
       listCostUsd(model, {
@@ -301,7 +390,9 @@ export function createAdvise(deps: AdviseDeps) {
         .text()
         .catch(() => "")
       if (!REFUSAL.test(text)) return res
-      refused.add(`${bareModel(ctx.model)}|${bareModel(config.advisor.model)}`)
+      refused.add(
+        `${bareModel(ctx.model)}|${bareModel(advisorModelOf(config))}`,
+      )
       mergeBeta(ctx.headers, false)
       deps.telemetry.count("model_advisor.advisor.refusals", {
         agent: ctx.agent ?? "unknown",

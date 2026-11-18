@@ -3,32 +3,38 @@ import { readFileSync } from "node:fs"
 import { describe, it } from "node:test"
 
 import {
+  ADVISOR_MARK,
+  advisorImpl,
   BETA,
   createAdvise,
   estimateTokens,
   rankOf,
   SYSTEM_LINE,
+  TOOL_SYSTEM_LINE,
+  toolActive,
   TOOL_TYPE,
   withoutAdvisor,
   type HookContext,
   type HookRequest,
 } from "./advise.ts"
-import { buildConfig } from "./config.ts"
+import { buildConfig, type Config } from "./config.ts"
 import type { AdvisorRecord } from "./decisions.ts"
 import { judgePrompt } from "./judge.ts"
 import type { Span, Telemetry } from "./otel.ts"
+import { defaultRoutingV2, type RoutingV2Config } from "./route-v2.ts"
 
 const SSE = readFileSync(
   new URL("./fixtures/advisor-response.sse", import.meta.url),
   "utf8",
 )
 
-function setup(config: object = {}) {
+function setup(config: object = {}, v2?: Partial<RoutingV2Config>) {
   const cfg = buildConfig({
     mode: "enforce",
     advisor: { enabled: true, alertSteps: 2 },
     ...config,
   }).config
+  if (v2) cfg.v2 = { ...defaultRoutingV2(), enabled: true, ...v2 }
   const records: AdvisorRecord[] = []
   const counts: Array<{
     name: string
@@ -394,5 +400,207 @@ describe("long turn without an advisor", () => {
     })
     for (let i = 0; i < 5; i++) await advise.before(long())
     assert.equal(records.filter((r) => r.kind === "alert").length, 0)
+  })
+})
+
+const v2Config = (
+  v2: Partial<RoutingV2Config> = {},
+  raw: object = {},
+): Config => {
+  const cfg = buildConfig({
+    mode: "enforce",
+    advisor: { enabled: true },
+    ...raw,
+  }).config
+  cfg.v2 = { ...defaultRoutingV2(), enabled: true, ...v2 }
+  return cfg
+}
+const gpt = {
+  levels: {
+    fast: { model: "openai/gpt-5-mini" },
+    standard: { model: "openai/gpt-5" },
+    frontier: { model: "openai/gpt-5-pro" },
+  },
+}
+const pluginTool = { name: "advisor", description: "ask", input_schema: {} }
+
+describe("advisor implementation", () => {
+  const cases: Array<[string, string, Partial<RoutingV2Config>, string]> = [
+    [
+      "anthropic below the advisor, auto",
+      "anthropic/claude-sonnet-5-5",
+      {},
+      "native",
+    ],
+    [
+      "bare claude id below the advisor, auto",
+      "claude-haiku-5-5",
+      {},
+      "native",
+    ],
+    ["executor at the advisor level", "anthropic/claude-opus-5-5", {}, "none"],
+    ["a model on no level", "mistral/large", {}, "none"],
+    ["another provider, auto", "openai/gpt-5", gpt, "tool"],
+    [
+      "forced tool on anthropic",
+      "claude-sonnet-5-5",
+      { advisor: { level: "frontier", impl: "tool" } },
+      "tool",
+    ],
+    [
+      "forced native on another provider",
+      "openai/gpt-5",
+      { ...gpt, advisor: { level: "frontier", impl: "native" } },
+      "native",
+    ],
+    [
+      "anthropic executor, other-provider advisor, auto",
+      "claude-sonnet-5-5",
+      {
+        levels: {
+          ...defaultRoutingV2().levels,
+          frontier: { model: "openai/gpt-5-pro" },
+        },
+      },
+      "tool",
+    ],
+    [
+      "an advisor level that does not exist",
+      "claude-sonnet-5-5",
+      { advisor: { level: "ultra", impl: "auto" } },
+      "none",
+    ],
+  ]
+  for (const [label, executor, v2, want] of cases)
+    it(`${label} -> ${want}`, () =>
+      assert.equal(advisorImpl(executor, v2Config(v2)), want))
+
+  it("falls back to the tool when the API refused the pairing, but not when forced native", () => {
+    const refused = new Set(["claude-sonnet-5-5|claude-opus-5-5"])
+    assert.equal(advisorImpl("claude-sonnet-5-5", v2Config(), refused), "tool")
+    assert.equal(
+      advisorImpl(
+        "claude-sonnet-5-5",
+        v2Config({ advisor: { level: "frontier", impl: "native" } }),
+        refused,
+      ),
+      "native",
+    )
+  })
+
+  it("is none when the advisor is disabled", () =>
+    assert.equal(
+      advisorImpl(
+        "claude-sonnet-5-5",
+        v2Config({}, { advisor: { enabled: false } }),
+      ),
+      "none",
+    ))
+
+  it("keeps the v1 rule with v2 off", () => {
+    const cfg = buildConfig({ advisor: { enabled: true } }).config
+    assert.equal(advisorImpl("claude-sonnet-5-5", cfg), "native")
+    assert.equal(advisorImpl("claude-opus-5-5", cfg), "none")
+    assert.equal(advisorImpl("openai/gpt-5", cfg), "none")
+  })
+
+  it("offers the tool only in enforce mode, to executors the tool serves, never to orchestrators", () => {
+    const cfg = v2Config(gpt)
+    assert.equal(toolActive("openai/gpt-5", "builder", cfg), true)
+    assert.equal(toolActive("openai/gpt-5", "build", cfg), false)
+    assert.equal(toolActive("openai/gpt-5", undefined, cfg), false)
+    assert.equal(toolActive(undefined, "builder", cfg), false)
+    assert.equal(toolActive("claude-sonnet-5-5", "builder", cfg), false)
+    cfg.mode = "shadow"
+    assert.equal(toolActive("openai/gpt-5", "builder", cfg), false)
+  })
+})
+
+describe("advisor policy with routing v2", () => {
+  it("attaches the native tool with the advisor level's model", async () => {
+    const { advise } = setup(
+      {},
+      {
+        levels: {
+          ...defaultRoutingV2().levels,
+          frontier: { model: "anthropic/claude-opus-5-5" },
+        },
+      },
+    )
+    const req = request({}, { tools: [pluginTool] })
+    req.body.system = [{ type: "text", text: `base\n\n${TOOL_SYSTEM_LINE}` }]
+    await advise.before(req)
+    const tools = req.body.tools as any[]
+    assert.equal(tools.filter((t) => t.name === "advisor").length, 1)
+    assert.equal(tools[0].type, TOOL_TYPE)
+    assert.equal(tools[0].model, "anthropic/claude-opus-5-5")
+    assert.equal(JSON.stringify(req.body).includes(TOOL_SYSTEM_LINE), false)
+    assert.ok(JSON.stringify(req.body).includes(SYSTEM_LINE))
+  })
+
+  it("leaves the plugin tool and its line when the tool serves the executor", async () => {
+    const { advise } = setup({}, gpt)
+    const req = request({ model: "openai/gpt-5" }, { tools: [pluginTool] })
+    const before = structuredClone(req.body)
+    await advise.before(req)
+    assert.deepEqual(req.body, before)
+    assert.equal(req.headers.get("anthropic-beta"), "oauth-2025-04-20")
+  })
+
+  it("removes the plugin tool where the tool does not serve the request", async () => {
+    for (const [over, v2] of [
+      [{ model: "claude-opus-5-5" }, undefined],
+      [{ agent: "build" }, undefined],
+      [{ model: "mistral/large" }, undefined],
+    ] as const) {
+      const { advise } = setup({}, v2 ?? {})
+      const req = request(over, { tools: [pluginTool] })
+      req.body.system = `base\n\n${TOOL_SYSTEM_LINE}`
+      await advise.before(req)
+      assert.equal(req.body.tools, undefined)
+      assert.equal(req.body.system, "base")
+    }
+  })
+
+  it("removes the plugin tool in shadow mode too", async () => {
+    const { advise } = setup({ mode: "shadow" }, gpt)
+    const req = request({ model: "openai/gpt-5" }, { tools: [pluginTool] })
+    await advise.before(req)
+    assert.equal(req.body.tools, undefined)
+  })
+
+  it("does not touch a tool named advisor when v2 is off", async () => {
+    const { advise } = setup()
+    const req = request({ model: "claude-opus-5-5" }, { tools: [pluginTool] })
+    await advise.before(req)
+    assert.deepEqual(req.body.tools, [pluginTool])
+  })
+
+  it("leaves advisor-tool prompts alone", async () => {
+    const { advise } = setup({}, {})
+    const req = request(
+      {},
+      { messages: [{ role: "user", content: `${ADVISOR_MARK}. Question` }] },
+    )
+    const before = structuredClone(req.body)
+    await advise.before(req)
+    assert.deepEqual(req.body, before)
+  })
+
+  it("after a refusal, falls back to the tool on the next request (auto)", async () => {
+    const { advise } = setup({}, {})
+    const body = { tools: [{ type: TOOL_TYPE, name: "advisor" }] }
+    const req = request({}, body)
+    const ctx: HookContext = { ...req, resend: async () => new Response("ok") }
+    await advise.response(
+      new Response("advisor tool not supported for this model", {
+        status: 400,
+      }),
+      ctx,
+    )
+    const next = request({}, { tools: [pluginTool] })
+    await advise.before(next)
+    assert.deepEqual(next.body.tools, [pluginTool])
+    assert.equal(next.headers.get("anthropic-beta"), "oauth-2025-04-20")
   })
 })

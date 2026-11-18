@@ -1,5 +1,11 @@
+import {
+  createAdvisorTool,
+  type AdvisorTool,
+  type ToolHost,
+} from "./advisor-tool.ts"
 import { createAdvisor, type Advisor, type SessionInfo } from "./advisor.ts"
 import { ConfigStore, type Config } from "./config.ts"
+import { appendRecord } from "./decisions.ts"
 import { track } from "./guard.ts"
 import { registerHooks } from "./hooks.ts"
 import type { JudgeFn } from "./judge.ts"
@@ -18,9 +24,17 @@ export function otelTarget(
 export type Host = {
   session: (id: string) => Promise<SessionInfo | undefined>
   judge?: JudgeFn
+  /** Absent when the host cannot read a session or call a model; the advisor tool is then off. */
+  advisorTool?: ToolHost
 }
 
-export function createCore(host: Host, store = new ConfigStore()): Advisor {
+/** The advisor plus, when the host supports it, the plugin `advisor` tool and live config. */
+export type Core = Advisor & {
+  tool?: AdvisorTool
+  config: () => Config
+}
+
+export function createCore(host: Host, store = new ConfigStore()): Core {
   const telemetry = new Telemetry(() => otelTarget(store.get()))
   const config = store.get()
   log("plugin_loaded", {
@@ -41,5 +55,31 @@ export function createCore(host: Host, store = new ConfigStore()): Advisor {
     await dispose()
   }
   registerHooks()
-  return advisor
+
+  const parents = new Map<string, string | null>()
+  const root = async (id: string): Promise<string> => {
+    let cur = id
+    for (let hop = 0; hop < 10; hop++) {
+      let parent = parents.get(cur)
+      if (parent === undefined) {
+        parent =
+          (await host.session(cur).catch(() => undefined))?.parentID ?? null
+        parents.set(cur, parent)
+      }
+      if (!parent) break
+      cur = parent
+    }
+    return cur
+  }
+  const tool = host.advisorTool
+    ? createAdvisorTool({
+        config: () => store.get(),
+        telemetry,
+        record: appendRecord,
+        root,
+        now: () => performance.timeOrigin + performance.now(),
+        host: host.advisorTool,
+      })
+    : undefined
+  return Object.assign(advisor, { tool, config: () => store.get() })
 }
