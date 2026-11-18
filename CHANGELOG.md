@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.4](https://github.com/mrmm-labs/opencode-model-advisor/compare/v0.1.3...v0.1.4) (2026-11-18)
+
+
+### Bug Fixes
+
+* **test:** tests never read the user config or calibration file ([#13](https://github.com/mrmm-labs/opencode-model-advisor/issues/13)) ([3152f7c](https://github.com/mrmm-labs/opencode-model-advisor/commit/3152f7cf74adc5bcea5aef91f4f6db05c1cc284d))
+
 ## [0.1.3](https://github.com/mrmm-labs/opencode-model-advisor/compare/v0.1.2...v0.1.3) (2026-11-18)
 
 
