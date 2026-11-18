@@ -1,0 +1,36 @@
+[tools]
+node = "24"
+pnpm = "10.32.1"
+# check:v2 loads the plugin under the OpenCode 2 runtime (bun).
+bun = "1"
+
+[tasks.install]
+description = "Install dependencies from the lockfile"
+run = "pnpm install --frozen-lockfile"
+
+[tasks.build]
+depends = ["install"]
+run = "pnpm run build"
+
+[tasks.test]
+depends = ["install"]
+run = "pnpm test"
+
+[tasks.lint]
+depends = ["install"]
+run = ["pnpm run typecheck", "pnpm run lint"]
+
+[tasks.check]
+description = "Everything CI runs, plus the OpenCode 2 runtime check"
+depends = ["lint", "test", "build"]
+run = ["pnpm run check:tui", "pnpm run check:v2", "npm pack --dry-run"]
+
+[tasks.calibrate]
+description = "Calibrate routing v2 from the decisions log (suggestions only)"
+depends = ["install"]
+run = "pnpm calibrate run"
+
+[tasks.grafana]
+description = "Regenerate grafana/model-router.json"
+depends = ["install"]
+run = "pnpm gen:grafana"
