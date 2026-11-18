@@ -5,6 +5,7 @@ import { join } from "node:path"
 import type { Hint } from "./hint.ts"
 import { parseJsonc } from "./jsonc.ts"
 import { log } from "./logger.ts"
+import { defaultRoutingV2, type RoutingV2Config } from "./route-v2.ts"
 
 export type Mode = "shadow" | "enforce"
 
@@ -40,6 +41,8 @@ export type Config = {
   otel: { endpoint?: string; headers?: Record<string, string> }
   /** Where the router block sits in the session sidebar. */
   tui: { position: "top" | "bottom" }
+  /** Routing v2 (docs/spec-routing-v2.md); off unless v2.enabled. */
+  v2: RoutingV2Config
 }
 
 export const DEFAULT_TIERS = {
@@ -67,6 +70,7 @@ export const defaultConfig = (): Config => ({
   },
   otel: {},
   tui: { position: "top" },
+  v2: defaultRoutingV2(),
 })
 
 const isObject = (v: unknown): v is Record<string, unknown> =>

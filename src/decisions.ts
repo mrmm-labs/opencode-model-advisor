@@ -5,6 +5,7 @@
  * routing decision, alert, child session routed and advisor request. No prompt text is
  * ever written; the reason is capped to a short string.
  */
+import type { DecisionV2 } from "./route-v2.ts"
 import {
   appendFileSync,
   mkdirSync,
@@ -34,6 +35,8 @@ export type DecisionRecord = {
   rule?: string
   reason: string
   task?: string
+  /** Routing v2 detail: facts with sources, score, level. */
+  v2?: DecisionV2
 }
 
 /** Ties a child session to the decision that routed it. */
