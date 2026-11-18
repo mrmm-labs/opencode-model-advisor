@@ -51,7 +51,14 @@ const value = (v: Exclude<Attr, undefined>) =>
 
 const attributes = (attrs: Record<string, Attr>) =>
   Object.entries(attrs)
-    .filter(([, v]) => v !== undefined && v !== "")
+    // A null or NaN attribute makes the collector reject the whole batch (HTTP 400).
+    .filter(
+      ([, v]) =>
+        v !== undefined &&
+        v !== null &&
+        v !== "" &&
+        (typeof v !== "number" || Number.isFinite(v)),
+    )
     .map(([key, v]) => ({ key, value: value(v as Exclude<Attr, undefined>) }))
 
 const resource = {

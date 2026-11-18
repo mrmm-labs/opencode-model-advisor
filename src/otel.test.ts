@@ -260,3 +260,25 @@ describe("routing v2 spans", () => {
     ])
   })
 })
+
+describe("attribute encoding", () => {
+  it("drops null and non-finite values instead of sending an invalid batch", () => {
+    const body = encodeSpans([
+      {
+        name: "x",
+        start: 1,
+        end: 2,
+        attrs: {
+          keep: 1.5,
+          gone: null as never,
+          nan: Number.NaN,
+          inf: Number.POSITIVE_INFINITY,
+        },
+      },
+    ]) as any
+    const keys = body.resourceSpans[0].scopeSpans[0].spans[0].attributes.map(
+      (a: { key: string }) => a.key,
+    )
+    assert.deepEqual(keys, ["keep"])
+  })
+})
