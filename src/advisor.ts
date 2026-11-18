@@ -1,5 +1,6 @@
 import { createAdvise } from "./advise.ts"
 import { bareModel, type Config } from "./config.ts"
+import { wallNow } from "./clock.ts"
 import { appendRecord, type AdvisorRecord } from "./decisions.ts"
 import { firstSeen } from "./guard.ts"
 import { parseMarkers } from "./hint.ts"
@@ -74,7 +75,7 @@ const MAX_CHILDREN = 2000
 
 export function createAdvisor(deps: Deps) {
   // Fractional milliseconds: most decisions take well under one.
-  const now = deps.now ?? (() => performance.timeOrigin + performance.now())
+  const now = deps.now ?? wallNow
   const state = new RouteState()
   const parents = new Map<string, string | null>()
   const pending = new Map<string, Pending[]>()
