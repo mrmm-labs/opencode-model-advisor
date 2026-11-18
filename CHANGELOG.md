@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.5](https://github.com/mrmm-labs/opencode-model-advisor/compare/v0.1.4...v0.1.5) (2026-11-18)
+
+
+### Bug Fixes
+
+* **otel:** drop null and non-finite attributes, which made the collector reject whole batches ([#15](https://github.com/mrmm-labs/opencode-model-advisor/issues/15)) ([4005a70](https://github.com/mrmm-labs/opencode-model-advisor/commit/4005a70de6e0f1c99862dd9d45df4e0edf632fff))
+
 ## [0.1.4](https://github.com/mrmm-labs/opencode-model-advisor/compare/v0.1.3...v0.1.4) (2026-11-18)
 
 
