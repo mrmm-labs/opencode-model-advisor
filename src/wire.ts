@@ -4,6 +4,7 @@ import {
   type ToolHost,
 } from "./advisor-tool.ts"
 import { createAdvisor, type Advisor, type SessionInfo } from "./advisor.ts"
+import { wallNow } from "./clock.ts"
 import { ConfigStore, type Config } from "./config.ts"
 import { createConnectors } from "./connectors.ts"
 import { appendRecord } from "./decisions.ts"
@@ -89,7 +90,7 @@ export function createCore(host: Host, store = new ConfigStore()): Core {
         telemetry,
         record: appendRecord,
         root,
-        now: () => performance.timeOrigin + performance.now(),
+        now: wallNow,
         host: host.advisorTool,
       })
     : undefined
