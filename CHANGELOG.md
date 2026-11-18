@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.3](https://github.com/mrmm-labs/opencode-model-advisor/compare/v0.1.2...v0.1.3) (2026-11-18)
+
+
+### Bug Fixes
+
+* **calibrate:** count only re-dispatches of retryAgents (default builder) as retries ([#11](https://github.com/mrmm-labs/opencode-model-advisor/issues/11)) ([0b7592e](https://github.com/mrmm-labs/opencode-model-advisor/commit/0b7592e48f40eccf919e4da70fd9350107a8b393))
+
 ## [0.1.2](https://github.com/mrmm-labs/opencode-model-advisor/compare/v0.1.1...v0.1.2) (2026-11-18)
 
 
