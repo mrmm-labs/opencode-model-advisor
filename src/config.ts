@@ -5,7 +5,17 @@ import { join } from "node:path"
 import type { Hint } from "./hint.ts"
 import { parseJsonc } from "./jsonc.ts"
 import { log } from "./logger.ts"
-import { defaultRoutingV2, type RoutingV2Config } from "./route-v2.ts"
+import {
+  defaultRoutingV2,
+  type ConnectorConfig,
+  type ConnectorMap,
+  type Difficulty,
+  type FactName,
+  type FactValue,
+  type Risk,
+  type RoutingV2Config,
+  type ScorePoint,
+} from "./route-v2.ts"
 
 export type Mode = "shadow" | "enforce"
 
@@ -15,6 +25,8 @@ export type Rule = {
   id: string
   tier: string
   test: (input: MatchInput) => boolean
+  /** Matches on the agent alone; routing v2 treats such a rule as a floor. */
+  agentOnly?: boolean
 }
 
 export type Config = {
@@ -165,6 +177,330 @@ export const qualify = (model: string, provider: string): string =>
 export const bareModel = (model: string | undefined): string =>
   (model ?? "").split("/").pop() ?? ""
 
+const FACT_NAMES: readonly string[] = [
+  "task",
+  "risk",
+  "files",
+  "modules",
+  "kind",
+  "migration",
+  "unknowns",
+  "retry",
+  "priorFailures",
+  "promptTokens",
+  "paths",
+] satisfies FactName[]
+const RISK_NAMES: Risk[] = ["low", "medium", "high", "critical"]
+const DIFFICULTIES: Difficulty[] = ["low", "medium", "high"]
+
+const isFactValue = (v: unknown): v is FactValue =>
+  typeof v === "string" ||
+  typeof v === "number" ||
+  typeof v === "boolean" ||
+  strings(v) !== undefined
+
+const validRegex = (v: unknown): v is string => {
+  if (typeof v !== "string") return false
+  try {
+    compileRegex(v)
+    return true
+  } catch {
+    return false
+  }
+}
+
+const finite = (v: unknown): v is number =>
+  typeof v === "number" && Number.isFinite(v)
+
+function buildPoint(p: unknown): ScorePoint | string {
+  if (!isObject(p)) return "not an object"
+  if (typeof p.fact !== "string" || !FACT_NAMES.includes(p.fact))
+    return `unknown fact ${JSON.stringify(p.fact)}`
+  if (!finite(p.add)) return "`add` must be a number"
+  const point: ScorePoint = { fact: p.fact as FactName, add: p.add }
+  if (p.gte !== undefined) {
+    if (!finite(p.gte)) return "`gte` must be a number"
+    point.gte = p.gte
+  }
+  if (p.eq !== undefined) {
+    if (!isFactValue(p.eq)) return "`eq` must be a string, number or boolean"
+    point.eq = p.eq
+  }
+  if (p.in !== undefined) {
+    if (!Array.isArray(p.in) || !p.in.every(isFactValue))
+      return "`in` must be a list of values"
+    point.in = p.in
+  }
+  if (p.per !== undefined) {
+    if (!finite(p.per) || p.per <= 0) return "`per` must be a positive number"
+    point.per = p.per
+  }
+  if (p.max !== undefined) {
+    if (!finite(p.max)) return "`max` must be a number"
+    point.max = p.max
+  }
+  if (
+    point.gte === undefined &&
+    point.eq === undefined &&
+    !point.in &&
+    point.per === undefined
+  )
+    return "needs one of gte, eq, in, per"
+  return point
+}
+
+function buildMap(m: unknown): ConnectorMap | string {
+  if (!isObject(m)) return "not an object"
+  if (!validRegex(m.label)) return "`label` must be a valid regex"
+  const out: ConnectorMap = { label: m.label }
+  if (m.set !== undefined) {
+    if (!isObject(m.set)) return "`set` must be an object"
+    const set: Partial<Record<FactName, FactValue>> = {}
+    for (const [k, v] of Object.entries(m.set)) {
+      if (FACT_NAMES.includes(k) && isFactValue(v)) set[k as FactName] = v
+    }
+    out.set = set
+  }
+  if (m.override !== undefined) {
+    if (!isObject(m.override) || typeof m.override.level !== "string")
+      return "`override` must be { level: string }"
+    out.override = { level: m.override.level }
+  }
+  if (!out.set && !out.override) return "needs `set` or `override`"
+  return out
+}
+
+function buildConnector(c: unknown): ConnectorConfig | string {
+  if (!isObject(c)) return "not an object"
+  if (typeof c.id !== "string" || !c.id) return "`id` must be a string"
+  const out: ConnectorConfig = {
+    id: c.id,
+    timeoutMs: 3000,
+    ttlMinutes: 360,
+    map: [],
+  }
+  const cmd = strings(c.command)
+  if (cmd && cmd.length > 0) out.command = cmd
+  else if (c.command !== undefined)
+    return "`command` must be a non-empty list of strings"
+  if (c.http !== undefined) {
+    const h = c.http
+    if (!isObject(h) || typeof h.url !== "string" || !h.url)
+      return "`http.url` must be a string"
+    out.http = { url: h.url }
+    if (h.method === "GET" || h.method === "POST") out.http.method = h.method
+    else if (h.method !== undefined) return "`http.method` must be GET or POST"
+    if (isObject(h.headers))
+      out.http.headers = Object.fromEntries(
+        Object.entries(h.headers).filter(([, v]) => typeof v === "string"),
+      ) as Record<string, string>
+    if (h.body !== undefined) out.http.body = h.body
+    if (typeof h.labelsPath === "string") out.http.labelsPath = h.labelsPath
+  }
+  if (!out.command && !out.http) return "needs `command` or `http`"
+  if (typeof c.labelsPath === "string") out.labelsPath = c.labelsPath
+  if (c.match !== undefined) {
+    if (!isObject(c.match)) return "`match` must be an object"
+    out.match = {}
+    for (const key of ["task", "agent"] as const) {
+      const v = c.match[key]
+      if (v === undefined) continue
+      if (!validRegex(v)) return `\`match.${key}\` must be a valid regex`
+      out.match[key] = v
+    }
+  }
+  for (const key of ["timeoutMs", "ttlMinutes"] as const) {
+    const v = c[key]
+    if (v === undefined) continue
+    if (finite(v) && v > 0 && (key !== "timeoutMs" || v <= 10_000)) out[key] = v
+    else
+      return key === "timeoutMs"
+        ? "`timeoutMs` must be between 1 and 10000"
+        : "`ttlMinutes` must be a positive number"
+  }
+  if (c.map !== undefined) {
+    if (!Array.isArray(c.map)) return "`map` must be a list"
+    for (const [n, m] of c.map.entries()) {
+      const built = buildMap(m)
+      if (typeof built === "string") return `map #${n + 1}: ${built}`
+      out.map.push(built)
+    }
+  }
+  return out
+}
+
+/** Merges the `v2` section over the defaults in `v2`; a bad part keeps its default and warns. */
+function buildV2(
+  raw: Record<string, unknown>,
+  v2: RoutingV2Config,
+  warn: (m: string) => void,
+): void {
+  if (typeof raw.enabled === "boolean") v2.enabled = raw.enabled
+  else if (raw.enabled !== undefined) warn("v2.enabled must be true or false")
+
+  if (raw.levels !== undefined) {
+    const l = raw.levels
+    if (
+      isObject(l) &&
+      Object.keys(l).length > 0 &&
+      Object.values(l).every(
+        (e) => isObject(e) && typeof e.model === "string" && e.model,
+      )
+    ) {
+      v2.levels = Object.fromEntries(
+        Object.entries(l).map(([k, e]) => [
+          k,
+          { model: (e as { model: string }).model },
+        ]),
+      )
+      v2.levelOrder = Object.keys(v2.levels)
+    } else warn("v2.levels must map level names to { model }; using defaults")
+  }
+  const known = (name: unknown): name is string =>
+    typeof name === "string" && Object.hasOwn(v2.levels, name)
+
+  if (raw.levelOrder !== undefined) {
+    const order = strings(raw.levelOrder)
+    if (order && order.length > 0 && order.every(known)) v2.levelOrder = order
+    else warn("v2.levelOrder must list level names that exist in v2.levels")
+  }
+
+  if (isObject(raw.defaults)) {
+    const r = raw.defaults.risk
+    if (typeof r === "string" && RISK_NAMES.includes(r as Risk))
+      v2.defaults.risk = r as Risk
+    else if (r !== undefined)
+      warn("v2.defaults.risk must be low, medium, high or critical")
+  } else if (raw.defaults !== undefined) warn("v2.defaults must be an object")
+
+  if (isObject(raw.difficulty)) {
+    const d = raw.difficulty
+    if (d.points !== undefined) {
+      if (Array.isArray(d.points)) {
+        const points: ScorePoint[] = []
+        d.points.forEach((p, n) => {
+          const built = buildPoint(p)
+          if (typeof built === "string")
+            warn(`v2.difficulty.points #${n + 1}: ${built}; ignored`)
+          else points.push(built)
+        })
+        v2.difficulty.points = points
+      } else warn("v2.difficulty.points must be a list; using defaults")
+    }
+    if (isObject(d.cutoffs)) {
+      const {
+        medium = v2.difficulty.cutoffs.medium,
+        high = v2.difficulty.cutoffs.high,
+      } = d.cutoffs
+      if (finite(medium) && finite(high) && medium <= high)
+        v2.difficulty.cutoffs = { medium, high }
+      else warn("v2.difficulty.cutoffs needs numbers with medium <= high")
+    } else if (d.cutoffs !== undefined)
+      warn("v2.difficulty.cutoffs must be an object")
+  } else if (raw.difficulty !== undefined)
+    warn("v2.difficulty must be an object")
+
+  if (isObject(raw.policy)) {
+    const p = raw.policy
+    if (isObject(p.matrix)) {
+      for (const risk of RISK_NAMES) {
+        const row = p.matrix[risk]
+        if (row === undefined) continue
+        if (!isObject(row)) {
+          warn(`v2.policy.matrix.${risk} must be an object`)
+          continue
+        }
+        for (const diff of DIFFICULTIES) {
+          const cell = row[diff]
+          if (cell === undefined) continue
+          if (known(cell)) v2.policy.matrix[risk][diff] = cell
+          else
+            warn(
+              `v2.policy.matrix.${risk}.${diff}: ${JSON.stringify(cell)} is not a level; using default`,
+            )
+        }
+      }
+    } else if (p.matrix !== undefined)
+      warn("v2.policy.matrix must be an object")
+    if (isObject(p.riskFloor)) {
+      const floor: Partial<Record<Risk, string>> = {}
+      for (const [risk, level] of Object.entries(p.riskFloor)) {
+        if (RISK_NAMES.includes(risk as Risk) && known(level))
+          floor[risk as Risk] = level
+        else warn(`v2.policy.riskFloor.${risk} names no risk or level; ignored`)
+      }
+      v2.policy.riskFloor = floor
+    } else if (p.riskFloor !== undefined)
+      warn("v2.policy.riskFloor must be an object")
+    if (p.retryStep !== undefined) {
+      if (
+        typeof p.retryStep === "number" &&
+        Number.isInteger(p.retryStep) &&
+        p.retryStep >= 0
+      )
+        v2.policy.retryStep = p.retryStep
+      else warn("v2.policy.retryStep must be a non-negative integer")
+    }
+  } else if (raw.policy !== undefined) warn("v2.policy must be an object")
+
+  if (raw.connectors !== undefined) {
+    if (Array.isArray(raw.connectors)) {
+      const list: ConnectorConfig[] = []
+      raw.connectors.forEach((c, n) => {
+        const built = buildConnector(c)
+        const id = isObject(c) && typeof c.id === "string" ? c.id : `#${n + 1}`
+        if (typeof built === "string")
+          warn(`v2.connectors ${id}: ${built}; ignored`)
+        else list.push(built)
+      })
+      v2.connectors = list
+    } else warn("v2.connectors must be a list")
+  }
+
+  if (isObject(raw.advisor)) {
+    const a = raw.advisor
+    if (known(a.level)) v2.advisor.level = a.level
+    else if (a.level !== undefined)
+      warn("v2.advisor.level must name a level in v2.levels")
+    if (a.impl === "auto" || a.impl === "native" || a.impl === "tool")
+      v2.advisor.impl = a.impl
+    else if (a.impl !== undefined)
+      warn('v2.advisor.impl must be "auto", "native" or "tool"')
+  } else if (raw.advisor !== undefined) warn("v2.advisor must be an object")
+
+  if (isObject(raw.calibration)) {
+    const c = raw.calibration
+    if (finite(c.minFirstPass) && c.minFirstPass >= 0 && c.minFirstPass <= 1)
+      v2.calibration.minFirstPass = c.minFirstPass
+    else if (c.minFirstPass !== undefined)
+      warn("v2.calibration.minFirstPass must be between 0 and 1")
+    if (
+      typeof c.minTasks === "number" &&
+      Number.isInteger(c.minTasks) &&
+      c.minTasks > 0
+    )
+      v2.calibration.minTasks = c.minTasks
+    else if (c.minTasks !== undefined)
+      warn("v2.calibration.minTasks must be a positive integer")
+  } else if (raw.calibration !== undefined)
+    warn("v2.calibration must be an object")
+
+  // Defaults name fast/standard/frontier; custom levels that drop one of those cannot route.
+  const dangling = new Set<string>()
+  for (const row of Object.values(v2.policy.matrix))
+    for (const level of Object.values(row))
+      if (!known(level)) dangling.add(level)
+  for (const level of Object.values(v2.policy.riskFloor))
+    if (level && !known(level)) dangling.add(level)
+  if (!known(v2.advisor.level)) dangling.add(v2.advisor.level)
+  if (dangling.size > 0) {
+    warn(
+      `v2: no level named ${[...dangling].join(", ")}; set v2.policy and v2.advisor.level for your levels. Routing v2 stays off`,
+    )
+    v2.enabled = false
+  }
+}
+
 /** Validates a parsed config file; invalid parts fall back to defaults with a warning. */
 export function buildConfig(raw: unknown): {
   config: Config
@@ -247,7 +583,9 @@ export function buildConfig(raw: unknown): {
         const test = compileWhen(r.when)
         if (typeof test === "string")
           return warn(`rule ${id}: ${test}; ignored`)
-        config.rules.push({ id, tier, test })
+        const agentOnly =
+          isObject(r.when) && Object.keys(r.when).every((k) => k === "agent")
+        config.rules.push({ id, tier, test, agentOnly })
       })
     } else warn("rules must be a list")
   }
@@ -294,6 +632,10 @@ export function buildConfig(raw: unknown): {
     if (pos === "top" || pos === "bottom") config.tui.position = pos
     else if (pos !== undefined) warn('tui.position must be "top" or "bottom"')
   } else if (raw.tui !== undefined) warn("tui must be an object")
+
+  if (isObject(raw.v2)) buildV2(raw.v2, config.v2, warn)
+  else if (raw.v2 !== undefined)
+    warn("v2 must be an object; routing v2 stays off")
 
   return { config, warnings }
 }

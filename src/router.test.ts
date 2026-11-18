@@ -290,3 +290,238 @@ describe("RouteState", () => {
     assert.equal(state.get("t999"), "sonnet")
   })
 })
+
+describe("routing v2", () => {
+  const v2cfg = (extra: object = {}, v2: object = {}): Config =>
+    buildConfig({
+      rules: [
+        { id: "read-only", when: { agent: ["explore"] }, tier: "opus" },
+        { id: "scout", when: { agent: ["scout"] }, tier: "haiku" },
+        { id: "risky", when: { prompt: "(?i)\\bauth\\b" }, tier: "opus" },
+      ],
+      v2: { enabled: true, ...v2 },
+      ...extra,
+    }).config
+
+  it("is untouched when disabled", () => {
+    const off = buildConfig({ v2: { enabled: false } }).config
+    const d = decided(
+      route(input({ hint: { risk: "critical" } }), off, new RouteState()),
+    )
+    assert.deepEqual([d.tier, d.source, d.v2], ["sonnet", "default", undefined])
+  })
+
+  it("routes by facts and records the v2 detail", () => {
+    const d = decided(
+      route(
+        input({ hint: { risk: "low", files: 20, modules: 5, task: "7" } }),
+        v2cfg(),
+        new RouteState(),
+      ),
+    )
+    assert.deepEqual(
+      [d.tier, d.source, d.model],
+      ["frontier", "v2", "anthropic/claude-opus-5-5"],
+    )
+    assert.equal(d.v2?.score.total, 4)
+    assert.equal(d.v2?.level, "frontier")
+    assert.match(d.reason, /risk low, score 4 \(files\+2 modules\+2\) high/)
+    assert.match(d.reason, /matrix low×high → frontier/)
+  })
+
+  it("uses the default risk and a cheap level for an easy low-risk task", () => {
+    const d = decided(
+      route(input({ hint: { tier: "T3" } }), v2cfg(), new RouteState()),
+    )
+    assert.deepEqual([d.tier, d.model], ["fast", "anthropic/claude-haiku-5-5"])
+  })
+
+  it("respects a provider prefix on the level model, else qualifies", () => {
+    const c = v2cfg(
+      { provider: "acme" },
+      {
+        levels: {
+          fast: { model: "other/small" },
+          standard: { model: "mid" },
+          frontier: { model: "big" },
+        },
+      },
+    )
+    const model = (risk: "low" | "medium") =>
+      decided(route(input({ hint: { risk } }), c, new RouteState())).model
+    assert.equal(model("low"), "other/small")
+    assert.equal(model("medium"), "acme/mid")
+  })
+
+  it("lets pin and the override marker beat v2", () => {
+    const pinned = decided(
+      route(input(), v2cfg({ pins: { builder: "haiku" } }), new RouteState()),
+    )
+    assert.deepEqual([pinned.tier, pinned.source], ["haiku", "pin"])
+
+    const byLevel = decided(
+      route(
+        input({ override: "fast", hint: { risk: "critical" } }),
+        v2cfg(),
+        new RouteState(),
+      ),
+    )
+    assert.deepEqual([byLevel.tier, byLevel.source], ["fast", "override"])
+    assert.ok(byLevel.v2)
+    assert.match(byLevel.reason, /override prompt marker fast/)
+
+    const byModel = decided(
+      route(input({ override: "claude-opus" }), v2cfg(), new RouteState()),
+    )
+    assert.deepEqual([byModel.tier, byModel.source], ["frontier", "override"])
+
+    const fragment = decided(
+      route(input({ override: "sonnet" }), v2cfg(), new RouteState()),
+    )
+    assert.deepEqual([fragment.tier, fragment.source], ["standard", "override"])
+
+    const v1Tier = decided(
+      route(
+        input({ override: "big" }),
+        v2cfg({ tiers: { small: "m-small", big: "m-big" } }),
+        new RouteState(),
+      ),
+    )
+    assert.deepEqual([v1Tier.tier, v1Tier.source], ["big", "override"])
+  })
+
+  it("applies a connector override level", () => {
+    const d = decided(
+      route(
+        input({
+          hint: { risk: "low" },
+          v2: {
+            facts: [],
+            override: { level: "frontier", detail: "gh label route:frontier" },
+            connectors: [{ id: "gh", ok: true, ms: 4, cached: false }],
+          },
+        }),
+        v2cfg(),
+        new RouteState(),
+      ),
+    )
+    assert.deepEqual([d.tier, d.source], ["frontier", "override"])
+    assert.equal(d.v2?.connectors[0].id, "gh")
+    assert.match(d.reason, /override gh label route:frontier/)
+  })
+
+  it("takes connector facts into account, highest risk winning", () => {
+    const d = decided(
+      route(
+        input({
+          hint: { risk: "low" },
+          v2: {
+            facts: [
+              {
+                fact: "risk",
+                value: "high",
+                kind: "connector",
+                source: "gh",
+              },
+            ],
+            connectors: [],
+          },
+        }),
+        v2cfg(),
+        new RouteState(),
+      ),
+    )
+    assert.equal(d.tier, "frontier")
+    assert.equal(d.v2?.disagreements.length, 1)
+  })
+
+  it("uses an agent-only rule as a floor by position, never as a ceiling", () => {
+    const state = new RouteState()
+    const floor = decided(
+      route(input({ agent: "explore", hint: { risk: "low" } }), v2cfg(), state),
+    )
+    assert.deepEqual([floor.tier, floor.rule], ["frontier", "read-only"])
+    assert.match(floor.reason, /agent rule read-only floor → frontier/)
+    // haiku sits at ladder position 0: no raise above the matrix level
+    const low = decided(
+      route(
+        input({ agent: "scout", hint: { risk: "medium" } }),
+        v2cfg(),
+        state,
+      ),
+    )
+    assert.deepEqual([low.tier, low.rule], ["standard", undefined])
+    // rules that look at more than the agent do not apply in v2
+    const other = decided(
+      route(
+        input({ prompt: "fix auth", hint: { risk: "low" } }),
+        v2cfg(),
+        state,
+      ),
+    )
+    assert.equal(other.tier, "fast")
+  })
+
+  it("does not let the floor beat an operator override", () => {
+    const d = decided(
+      route(
+        input({ agent: "explore", override: "fast" }),
+        v2cfg(),
+        new RouteState(),
+      ),
+    )
+    assert.equal(d.tier, "fast")
+  })
+
+  it("keeps the retry escalation and the second-failure alert", () => {
+    const state = new RouteState()
+    const first = decided(
+      route(
+        input({ hint: { risk: "low", task: "9", retry: 1 } }),
+        v2cfg(),
+        state,
+      ),
+    )
+    assert.deepEqual(
+      [first.tier, first.escalation, first.alert],
+      ["standard", "climb", undefined],
+    )
+    state.set("9", first.tier)
+    const second = decided(
+      route(
+        input({ hint: { risk: "low", task: "9", retry: 2 } }),
+        v2cfg(),
+        state,
+      ),
+    )
+    assert.deepEqual(
+      [second.tier, second.escalation, second.alert],
+      ["frontier", "stop", "second-failure"],
+    )
+    assert.equal(second.v2?.facts.priorFailures?.value, 2)
+    const fresh = decided(
+      route(input({ hint: { risk: "low", retry: 0 } }), v2cfg(), state),
+    )
+    assert.equal(fresh.escalation, undefined)
+  })
+
+  it("scores derived facts from the prompt", () => {
+    const d = decided(
+      route(
+        input({
+          prompt: "x".repeat(250_000),
+          hint: { risk: "low", unknowns: 1 },
+        }),
+        v2cfg(),
+        new RouteState(),
+      ),
+    )
+    assert.equal(d.v2?.score.total, 2)
+    assert.equal(d.tier, "standard")
+  })
+
+  it("never calls the judge", () => {
+    const c = v2cfg({ judge: { enabled: true } })
+    assert.notEqual(route(input(), c, new RouteState()), "judge")
+  })
+})
