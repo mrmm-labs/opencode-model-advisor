@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.1](https://github.com/mrmm-labs/opencode-model-advisor/compare/v0.1.0...v0.1.1) (2026-11-18)
+
+
+### Bug Fixes
+
+* register the advisor tool only when routing v2 is on ([#6](https://github.com/mrmm-labs/opencode-model-advisor/issues/6)) ([35a22f9](https://github.com/mrmm-labs/opencode-model-advisor/commit/35a22f91c8998c812079d77e971392b96064e255))
+
 ## 0.1.0 (2026-11-18)
 
 
