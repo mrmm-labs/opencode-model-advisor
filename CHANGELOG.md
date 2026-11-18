@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.1.0 (2026-11-18)
+
+
+### Features
+
+* add a TUI with a sidebar line, mode and pin commands, a decisions list and alert toasts ([3545009](https://github.com/mrmm-labs/opencode-model-advisor/commit/3545009afa8ea35e41782cd382abf63367b5f101))
+* add the advisor tool and the response filter that lets OpenCode round-trip it ([2cf50b1](https://github.com/mrmm-labs/opencode-model-advisor/commit/2cf50b1e660e069256d33849cdae79142056be00))
+* route subagent dispatches in shadow or enforce mode ([4beb486](https://github.com/mrmm-labs/opencode-model-advisor/commit/4beb486a2c58dd5a3cd3e7145f5c061178beb5f6))
+* routing v2 (facts, connectors, difficulty score, levels, calibration, TUI, telemetry, any-provider advisor) ([#4](https://github.com/mrmm-labs/opencode-model-advisor/issues/4)) ([068281c](https://github.com/mrmm-labs/opencode-model-advisor/commit/068281ceea244ca03a889ed51c6d7b3c9dbb9177))
+* structured sidebar panel, top or bottom, and a grouped decisions list ([f5a0b47](https://github.com/mrmm-labs/opencode-model-advisor/commit/f5a0b47a6eecb50b5d4f120ffa0645e485d47576))
+
+
+### Bug Fixes
+
+* keep sub-millisecond span timing and keep tests off the real log ([e7650a6](https://github.com/mrmm-labs/opencode-model-advisor/commit/e7650a6b68d8963dbb8e341f3a1e4a757556cbb7))
+
+## Changelog
+
 ## Unreleased
 
 ### Features
