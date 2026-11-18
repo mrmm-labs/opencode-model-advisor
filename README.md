@@ -115,6 +115,89 @@ your agents: treat the judge as a hint, with rules and pins above it.
 It is off by default because every dispatch no rule matched costs one extra short call, and in shadow
 mode that is pure overhead until you read the results.
 
+## Routing v2
+
+Off by default (`v2.enabled: false`): everything above is unchanged. When on, the router stops
+reading one tier and scores the task instead. A dispatch is described by **facts**, the facts give a
+**difficulty** score, and a **risk × difficulty** matrix picks a **level**. Each level maps to a model
+from any provider. Design: [docs/spec-routing-v2.md](docs/spec-routing-v2.md).
+
+Order: pin, then the override marker (`[[advisor: frontier]]` takes a level name or a model fragment),
+then v2. The v1 `rules`, the judge and the `default` tier are not consulted, with one exception: a rule
+that matches on `agent` alone acts as a floor. Its tier is read by position (second tier on the ladder
+means second level), and the level never ends up below it.
+
+```
+[[route: task=1047 risk=high files=12 modules=3 kind=edit migration=no unknowns=2 retry=1]]
+```
+
+`tier=` still works as an alias of `risk` (`T1`, `T2`, `T3` map to high, medium, low). Missing facts take
+the config default. The plugin adds `promptTokens` (characters / 4), `paths` (path-like words in the
+prompt, at most 20) and `priorFailures` (the `retry` count, only when this process already dispatched
+the same `task`).
+
+Each fact keeps its source. The strongest source wins: override, connector, caller, plugin, default.
+`risk` is the exception: the highest value from any source wins. When sources disagree, the losing
+values are stored on the decision and a `fact-disagreement` alert is recorded.
+
+After the matrix, the **risk floor** lifts the level, then each retry climbs `retryStep` levels (capped
+at the top). An operator override or a connector's override level beats all of it.
+
+```jsonc
+{
+  "v2": {
+    "enabled": true,
+    "levels": {
+      "fast": { "model": "anthropic/claude-haiku-5-5" },
+      "standard": { "model": "anthropic/claude-sonnet-5-5" },
+      "frontier": { "model": "anthropic/claude-opus-5-5" },
+    },
+    "difficulty": {
+      "points": [
+        { "fact": "files", "gte": 15, "add": 2 },
+        { "fact": "modules", "gte": 3, "add": 2 },
+        { "fact": "migration", "eq": true, "add": 2 },
+        { "fact": "kind", "in": ["new", "refactor"], "add": 1 },
+        { "fact": "unknowns", "per": 1, "add": 1, "max": 3 },
+        { "fact": "priorFailures", "per": 1, "add": 2 },
+      ],
+      "cutoffs": { "medium": 2, "high": 4 },
+    },
+    "policy": {
+      "matrix": {
+        "low": { "low": "fast", "medium": "standard", "high": "frontier" },
+      },
+      "riskFloor": { "high": "frontier", "critical": "frontier" },
+      "retryStep": 1,
+    },
+    "defaults": { "risk": "medium" },
+    "connectors": [
+      {
+        "id": "tracker",
+        "match": { "task": "^\\d+$" },
+        "command": ["gh", "issue", "view", "{task}", "--json", "labels"],
+        "timeoutMs": 3000,
+        "ttlMinutes": 360,
+        "map": [
+          { "label": "^risk:high$", "set": { "risk": "high" } },
+          { "label": "^route:frontier$", "override": { "level": "frontier" } },
+        ],
+      },
+    ],
+  },
+}
+```
+
+Every key is optional and merges over the defaults shown in the spec (`matrix` merges cell by cell).
+A level name in `matrix`, `riskFloor`, `levelOrder` or `advisor.level` that is not in `levels` is
+refused with a warning; if that leaves the policy pointing at a missing level (custom `levels` without
+a matching `matrix`), v2 stays off. `levelOrder` defaults to the key order of `levels`, cheapest first.
+A connector needs `timeoutMs` of at most 10000 (default 3000) and a `command` or `http` source.
+
+The decision record carries the facts with their sources, the score breakdown, each step the policy
+took and the connector outcomes (`v2` in `decisions.jsonl`). Paths found in the prompt are stored
+as facts; the prompt text itself never is.
+
 ## Advising
 
 With `advisor.enabled: true` and `mode: "enforce"`, a cheaper model's requests get the Anthropic

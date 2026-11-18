@@ -1,5 +1,7 @@
 import { qualify, resolveTier, type Config } from "./config.ts"
-import type { Hint } from "./hint.ts"
+import { derivedFacts, explain } from "./explain.ts"
+import { hintFacts, type Hint } from "./hint.ts"
+import type { DecisionV2, FactInput, Level } from "./route-v2.ts"
 
 export type JudgeOutcome =
   | { ok: true; tier: string; reason: string }
@@ -14,6 +16,12 @@ export type RouteInput = {
   override?: string
   /** Set on the second pass, after the judge ran. */
   judge?: JudgeOutcome
+  /** Routing v2 only: what connectors found before the dispatch was routed. */
+  v2?: {
+    facts: FactInput[]
+    override?: { level?: Level; detail: string }
+    connectors: DecisionV2["connectors"]
+  }
 }
 
 export type Decision = {
@@ -27,6 +35,8 @@ export type Decision = {
   /** Set when an escalation decision climbed a tier or held it. */
   escalation?: "climb" | "stop"
   alert?: "second-failure"
+  /** Routing v2 detail; set when the decision came from the v2 path. */
+  v2?: DecisionV2
 }
 
 const MAX_TASKS = 1000
@@ -79,6 +89,87 @@ const above = (config: Config, tier: string): string =>
     Math.min(config.ladder.indexOf(tier) + 1, config.ladder.length - 1)
   ]
 
+/** The level an override marker names: a level name, else a fragment of a level's model. */
+function levelFor(value: string, config: Config): Level | undefined {
+  const v = value.trim().toLowerCase()
+  if (!v) return undefined
+  const { levels, levelOrder } = config.v2
+  return (
+    levelOrder.find((l) => l.toLowerCase() === v) ??
+    levelOrder.find((l) => levels[l].model.toLowerCase().includes(v))
+  )
+}
+
+/** Same position on the level ladder as the tier has on the v1 ladder. */
+function floorLevel(tier: string, config: Config): Level {
+  const { levelOrder } = config.v2
+  return levelOrder[
+    Math.min(config.ladder.indexOf(tier), levelOrder.length - 1)
+  ]
+}
+
+function routeV2(
+  input: RouteInput,
+  config: Config,
+  state: RouteState,
+  override?: { level: Level; detail: string },
+): Decision {
+  const { hint } = input
+  const dispatchedBefore = !!hint.task && state.get(hint.task) !== undefined
+  const operator = override ?? input.v2?.override
+  const v2 = explain(
+    {
+      agent: input.agent,
+      prompt: input.prompt,
+      inputs: [
+        ...hintFacts(hint),
+        ...derivedFacts(input.prompt, hint, dispatchedBefore),
+        ...(input.v2?.facts ?? []),
+      ],
+      override: operator,
+    },
+    config.v2,
+  )
+  v2.connectors = input.v2?.connectors ?? []
+
+  let rule: string | undefined
+  if (!operator?.level) {
+    const floor = config.rules.find((r) => r.agentOnly && r.test(input))
+    if (floor) {
+      const level = floorLevel(floor.tier, config)
+      const { levelOrder } = config.v2
+      if (levelOrder.indexOf(level) > levelOrder.indexOf(v2.level)) {
+        v2.level = level
+        v2.model = config.v2.levels[level].model
+        v2.steps.push(`agent rule ${floor.id} floor → ${level}`)
+        rule = floor.id
+      }
+    }
+  }
+
+  const retry = hint.retry ?? 0
+  const score = v2.score.breakdown.map(
+    (b) => `${b.fact}${b.add > 0 ? "+" : ""}${b.add}`,
+  )
+  return {
+    tier: v2.level,
+    model: qualify(v2.model, config.provider),
+    source:
+      operator?.level && Object.hasOwn(config.v2.levels, operator.level)
+        ? "override"
+        : "v2",
+    ...(rule ? { rule } : {}),
+    reason: `risk ${v2.risk}, score ${v2.score.total}${score.length ? ` (${score.join(" ")})` : ""} ${v2.score.difficulty}; ${v2.steps.join("; ")}`,
+    ...(retry >= 1
+      ? {
+          escalation: retry >= 2 ? ("stop" as const) : ("climb" as const),
+          ...(retry >= 2 ? { alert: "second-failure" as const } : {}),
+        }
+      : {}),
+    v2,
+  }
+}
+
 /**
  * First match wins: pin, override marker, escalation, rules, judge, default.
  * Returns "judge" when only the judge can decide and has not run yet; call again
@@ -94,6 +185,15 @@ export function route(
   if (pin && config.tiers[pin])
     return decide(config, pin, "pin", "operator pin")
 
+  if (config.v2.enabled && input.override) {
+    const level = levelFor(input.override, config)
+    if (level)
+      return routeV2(input, config, state, {
+        level,
+        detail: `prompt marker ${input.override}`,
+      })
+  }
+
   if (input.override) {
     const tier = resolveTier(input.override, config)
     if (tier)
@@ -104,6 +204,8 @@ export function route(
         `prompt override ${input.override}`,
       )
   }
+
+  if (config.v2.enabled) return routeV2(input, config, state)
 
   const matched = config.rules.find((r) => r.test(input))
 

@@ -4,6 +4,8 @@
  */
 import type { Plugin as V2Plugin } from "@opencode/plugin"
 
+import { TOOL_SYSTEM_LINE, toolActive } from "./advise.ts"
+import { TOOL_DESCRIPTION, TOOL_NAME, v2Host } from "./advisor-tool.ts"
 import type { HostEvent } from "./advisor.ts"
 import { log } from "./logger.ts"
 import { createCore } from "./wire.ts"
@@ -19,6 +21,7 @@ type DispatchInput = {
 
 export async function setup(ctx: Context) {
   const advisor = createCore({
+    advisorTool: v2Host(ctx as never),
     session: async (id) => {
       const info = await ctx.session.get({ sessionID: id } as never)
       const i = info as { parentID?: string; model?: { id?: string } }
@@ -49,6 +52,49 @@ export async function setup(ctx: Context) {
       })
     }
   })
+
+  const run = advisor.tool
+  if (run) {
+    await ctx.tool.transform((editor) =>
+      editor.add({
+        name: TOOL_NAME,
+        description: TOOL_DESCRIPTION,
+        input: {
+          type: "object",
+          properties: {
+            question: {
+              type: "string",
+              description: "What you need advice on",
+            },
+          },
+          required: ["question"],
+        },
+        execute: async (
+          input: { question?: string },
+          c: { sessionID: string; agent: string; signal: AbortSignal },
+        ) => ({
+          content: await run.execute(input.question ?? "", {
+            sessionID: c.sessionID,
+            agent: c.agent,
+            signal: c.signal,
+          }),
+        }),
+      } as never),
+    )
+    // The tool and its system line are offered only to sessions the advisor serves through it.
+    await ctx.session.hook("context", (c) => {
+      if (
+        toolActive(
+          `${c.model.providerID}/${c.model.id}`,
+          c.agent,
+          advisor.config(),
+        )
+      ) {
+        if (!c.system.some((p) => p.text.includes(TOOL_SYSTEM_LINE)))
+          c.system.push({ type: "text", text: TOOL_SYSTEM_LINE })
+      } else delete c.tools[TOOL_NAME]
+    })
+  }
 
   const abort = new AbortController()
   void (async () => {

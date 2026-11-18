@@ -1,0 +1,214 @@
+# Example OpenTelemetry Collector config (contrib distribution, v0.165 or newer):
+# turns the plugin's routing spans into Prometheus metrics for grafana/model-router.json.
+#
+# The plugin sends OTLP/HTTP to :4318. Spans become metrics in the signal_to_metrics
+# connector; the plugin's own metrics (model_advisor.*) pass straight through.
+# Both arrive as delta temporality, so delta_to_cumulative runs before Prometheus.
+#
+# Prometheus names: dots become underscores, monotonic sums get `_total`, histograms
+# get `_bucket`/`_sum`/`_count`. Gauges keep their name.
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 127.0.0.1:4318
+
+processors:
+  # Routing decisions are sparse and calibration is rare: keep streams for two days.
+  delta_to_cumulative:
+    max_stale: 48h
+  batch: {}
+
+connectors:
+  signal_to_metrics:
+    spans:
+      # Only decisions that carry routing v2 detail: earlier `route <agent>` spans have
+      # no `route.level` and are skipped.
+      - name: model_router.decisions
+        description: Routing decisions by level, risk, difficulty and agent
+        conditions:
+          - IsMatch(span.name, "^route ") and span.attributes["route.level"] != nil
+        attributes:
+          - key: route.level
+          - key: route.risk
+          - key: route.difficulty
+          - key: opencode.agent
+        sum:
+          value: "1"
+          monotonic: true
+
+      - name: model_router.score
+        description: Difficulty score of each decision
+        conditions:
+          - IsMatch(span.name, "^route ") and span.attributes["route.level"] != nil
+        attributes:
+          - key: route.level
+        histogram:
+          buckets: [0, 1, 2, 3, 4, 5, 6, 8, 10, 12]
+          count: "1"
+          value: span.attributes["route.score"]
+
+      - name: model_router.score.breakdown
+        description: Decisions by which rubric lines added points, e.g. "files+2 migration+2"
+        conditions:
+          - IsMatch(span.name, "^route ") and span.attributes["route.level"] != nil
+        attributes:
+          - key: route.score.breakdown
+            default_value: none
+        sum:
+          value: "1"
+          monotonic: true
+
+      - name: model_router.disagreements
+        description: Facts whose sources disagreed
+        conditions:
+          - IsMatch(span.name, "^route ") and span.attributes["route.disagreements"] > 0
+        attributes:
+          - key: route.level
+        sum:
+          value: Int(span.attributes["route.disagreements"])
+          monotonic: true
+
+      # The label is a comma list of fact names; the dashboard matches one fact at a time.
+      - name: model_router.disagreement.facts
+        description: Decisions with a disagreement, by the facts involved
+        conditions:
+          - IsMatch(span.name, "^route ") and span.attributes["route.level"] != nil
+        attributes:
+          - key: route.disagreement.facts
+        sum:
+          value: "1"
+          monotonic: true
+
+      - name: model_router.fact_sources
+        description: Where each fact's chosen value came from, as "<kind>:<source>"
+        conditions:
+          - IsMatch(span.name, "^route ") and span.attributes["route.level"] != nil
+        attributes:
+          - key: route.fact.task.source
+            optional: true
+          - key: route.fact.risk.source
+            optional: true
+          - key: route.fact.files.source
+            optional: true
+          - key: route.fact.modules.source
+            optional: true
+          - key: route.fact.kind.source
+            optional: true
+          - key: route.fact.migration.source
+            optional: true
+          - key: route.fact.unknowns.source
+            optional: true
+          - key: route.fact.retry.source
+            optional: true
+          - key: route.fact.priorFailures.source
+            optional: true
+          - key: route.fact.promptTokens.source
+            optional: true
+          - key: route.fact.paths.source
+            optional: true
+        sum:
+          value: "1"
+          monotonic: true
+
+      # One span per connector call, so these carry the connector id as a label.
+      - name: model_router.connector.calls
+        description: Connector calls by id, outcome and cache hit
+        conditions:
+          - IsMatch(span.name, "^connector ")
+        attributes:
+          - key: connector.id
+          - key: connector.ok
+          - key: connector.cached
+        sum:
+          value: "1"
+          monotonic: true
+
+      - name: model_router.connector.duration
+        description: Connector call latency in ms, cache hits excluded
+        conditions:
+          - IsMatch(span.name, "^connector ") and span.attributes["connector.cached"] == false
+        attributes:
+          - key: connector.id
+        histogram:
+          buckets: [5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000]
+          count: "1"
+          value: span.attributes["connector.ms"]
+
+      # Calibration report, one span per bucket. Gauges keep the last value.
+      - name: model_router.calibration.first_pass
+        description: Share of tasks in the bucket done on the first attempt
+        conditions:
+          - span.name == "model-advisor calibration bucket"
+        attributes:
+          - key: risk
+          - key: difficulty
+          - key: level
+        gauge:
+          value: span.attributes["first_pass"]
+
+      - name: model_router.calibration.cost_per_task
+        description: Average cost per task in the bucket, USD
+        conditions:
+          - span.name == "model-advisor calibration bucket"
+        attributes:
+          - key: risk
+          - key: difficulty
+          - key: level
+        gauge:
+          value: span.attributes["cost_per_task"]
+
+      - name: model_router.calibration.avg_retries
+        description: Average retries per task in the bucket
+        conditions:
+          - span.name == "model-advisor calibration bucket"
+        attributes:
+          - key: risk
+          - key: difficulty
+          - key: level
+        gauge:
+          value: span.attributes["avg_retries"]
+
+      - name: model_router.calibration.tasks
+        description: Tasks in the bucket
+        conditions:
+          - span.name == "model-advisor calibration bucket"
+        attributes:
+          - key: risk
+          - key: difficulty
+          - key: level
+        gauge:
+          value: span.attributes["tasks"]
+
+      - name: model_router.calibration.monotonic
+        description: 1 when higher levels did not do worse than lower ones in the backtest
+        conditions:
+          - span.name == "model-advisor calibration summary" and span.attributes["monotonic"] != nil
+        gauge:
+          value: Int(span.attributes["monotonic"])
+
+      - name: model_router.calibration.suggestions
+        description: Open suggestions from the last calibration
+        conditions:
+          - span.name == "model-advisor calibration summary"
+        gauge:
+          value: span.attributes["suggestions"]
+
+exporters:
+  prometheus:
+    endpoint: 127.0.0.1:8889
+    # Default is 5m, which would drop the calibration gauges between runs.
+    metric_expiration: 48h
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      # Add your trace backend here as well; spans still reach it.
+      exporters: [signal_to_metrics]
+    metrics:
+      receivers: [otlp, signal_to_metrics]
+      processors: [delta_to_cumulative, batch]
+      exporters: [prometheus]

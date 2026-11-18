@@ -47,6 +47,22 @@ print("config after:", open(root+"/model-advisor.jsonc").read().strip())
 open(root+"/decisions.jsonl","a").write(json.dumps({"v":1,"kind":"alert","t":"2999-01-01T00:00:01Z","alert":"judge-failed","agent":"builder","detail":"timeout"})+"\n")
 pump(5)
 print("toast:", "Judge failing" in screen())
+os.write(fd,b"\x10"); pump(1)
+os.write(fd,b"Model router: check"); pump(1)
+os.write(fd,b"\r"); pump(2)
+check_prompt="or a task id" in screen()
+print("check prompt:", check_prompt)
+os.write(fd,b"[[route: task=1 risk=high files=12]]"); pump(1)
+os.write(fd,b"\r"); pump(3)
+check_result="nothing dispatched" in screen() and "connectors: not configured" in screen()
+print("check result:", check_result)
+os.write(fd,b"\x1b"); pump(1)
+os.write(fd,b"\x10"); pump(1)
+os.write(fd,b"Model router: settings"); pump(1)
+os.write(fd,b"\r"); pump(2)
+settings_dialog="risk x difficulty matrix" in screen()
+print("settings dialog:", settings_dialog)
+os.write(fd,b"\x1b"); pump(1)
 txt=re.sub(rb"\x1b\[[0-9;?]*[A-Za-z]",b" ",buf).decode("utf8","ignore")
 print("bytes",len(buf))
 for m in ["advisor: mode","advisor: pin","advisor: decisions","error","Error","failed"]:
@@ -57,6 +73,6 @@ except: pass
 
 
 
-ok = all(m in txt for m in ["advisor: mode", "advisor: pin", "advisor: decisions"])
+ok = all(m in txt for m in ["advisor: mode", "advisor: pin", "advisor: decisions", "Model router: check", "Model router: settings", "Model router: calibration"]) and check_prompt and check_result and settings_dialog
 shutil.rmtree(root, ignore_errors=True)
 sys.exit(0 if ok else 1)

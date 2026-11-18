@@ -21,6 +21,7 @@ import {
   resolveTier,
 } from "./config.ts"
 import { parseJsonc } from "./jsonc.ts"
+import { defaultRoutingV2 } from "./route-v2.ts"
 
 const input = (
   over: Partial<{ agent: string; prompt: string; hint: object }> = {},
@@ -260,5 +261,185 @@ describe("example config", () => {
     assert.equal(config.advisor.alertSteps, 15)
     assert.equal(warnings.length, 3)
     assert.equal(buildConfig({ advisor: 3 }).warnings.length, 1)
+  })
+})
+
+describe("routing v2 config", () => {
+  const v2 = (raw: object) => buildConfig({ v2: raw })
+
+  it("is off with defaults when absent", () => {
+    const { config, warnings } = buildConfig({})
+    assert.equal(config.v2.enabled, false)
+    assert.deepEqual(config.v2, defaultRoutingV2())
+    assert.deepEqual(warnings, [])
+  })
+
+  it("enables and merges a partial section over the defaults", () => {
+    const { config, warnings } = v2({
+      enabled: true,
+      defaults: { risk: "low" },
+      difficulty: { cutoffs: { high: 6 } },
+      policy: { matrix: { low: { low: "standard" } }, retryStep: 2 },
+    })
+    assert.deepEqual(warnings, [])
+    assert.equal(config.v2.enabled, true)
+    assert.equal(config.v2.defaults.risk, "low")
+    assert.deepEqual(config.v2.difficulty.cutoffs, { medium: 2, high: 6 })
+    assert.equal(config.v2.policy.matrix.low.low, "standard")
+    assert.equal(config.v2.policy.matrix.low.high, "frontier")
+    assert.equal(config.v2.policy.retryStep, 2)
+    assert.equal(config.v2.difficulty.points.length, 7)
+  })
+
+  it("takes custom levels with their order, and needs a matching policy", () => {
+    const levels = { a: { model: "x/a" }, b: { model: "y/b" } }
+    const off = v2({ enabled: true, levels })
+    assert.equal(off.config.v2.enabled, false)
+    assert.deepEqual(off.config.v2.levelOrder, ["a", "b"])
+    assert.match(off.warnings.join("\n"), /no level named/)
+    const row = { low: "a", medium: "a", high: "b" }
+    const ok = v2({
+      enabled: true,
+      levels,
+      policy: {
+        matrix: { low: row, medium: row, high: row, critical: row },
+        riskFloor: { critical: "b" },
+      },
+      advisor: { level: "b", impl: "tool" },
+    })
+    assert.deepEqual(ok.warnings, [])
+    assert.equal(ok.config.v2.enabled, true)
+    assert.deepEqual(ok.config.v2.policy.riskFloor, { critical: "b" })
+    assert.deepEqual(ok.config.v2.advisor, { level: "b", impl: "tool" })
+  })
+
+  it("keeps defaults for invalid parts and warns for each", () => {
+    const { config, warnings } = v2({
+      enabled: "yes",
+      levels: { x: {} },
+      levelOrder: ["nope"],
+      defaults: { risk: "extreme" },
+      difficulty: { points: "many", cutoffs: { medium: 5, high: 1 } },
+      policy: {
+        matrix: { low: { low: "missing" } },
+        riskFloor: { high: "missing", bogus: "fast" },
+        retryStep: -1,
+      },
+      advisor: { level: "missing", impl: "magic" },
+      calibration: { minFirstPass: 2, minTasks: 0 },
+    })
+    const d = defaultRoutingV2()
+    assert.equal(warnings.length, 14, warnings.join("\n"))
+    assert.equal(config.v2.enabled, false)
+    assert.deepEqual(config.v2.levels, d.levels)
+    assert.deepEqual(config.v2.levelOrder, d.levelOrder)
+    assert.equal(config.v2.defaults.risk, "medium")
+    assert.deepEqual(config.v2.difficulty, d.difficulty)
+    assert.deepEqual(config.v2.policy.matrix, d.policy.matrix)
+    assert.deepEqual(config.v2.policy.riskFloor, {})
+    assert.equal(config.v2.policy.retryStep, 1)
+    assert.deepEqual(config.v2.advisor, d.advisor)
+    assert.deepEqual(config.v2.calibration, d.calibration)
+  })
+
+  it("drops only the bad rubric lines", () => {
+    const { config, warnings } = v2({
+      difficulty: {
+        points: [
+          { fact: "files", gte: 3, add: 1 },
+          { fact: "bogus", gte: 3, add: 1 },
+          { fact: "files", add: 1 },
+          { fact: "kind", in: ["new"], add: "x" },
+          { fact: "unknowns", per: 0, add: 1 },
+          "nope",
+        ],
+      },
+    })
+    assert.deepEqual(config.v2.difficulty.points, [
+      { fact: "files", gte: 3, add: 1 },
+    ])
+    assert.equal(warnings.length, 5)
+  })
+
+  it("warns when v2 is not an object", () => {
+    assert.equal(buildConfig({ v2: true }).warnings.length, 1)
+  })
+
+  describe("connectors", () => {
+    const good = {
+      id: "github",
+      match: { task: "^\\d+$" },
+      command: ["gh", "issue", "view", "{task}", "--json", "labels"],
+      map: [
+        { label: "^tier:T1$", set: { risk: "high", bogus: 1 } },
+        { label: "^route:frontier$", override: { level: "frontier" } },
+      ],
+    }
+
+    it("parses a connector with its defaults", () => {
+      const { config, warnings } = v2({ connectors: [good] })
+      assert.deepEqual(warnings, [])
+      const [c] = config.v2.connectors
+      assert.equal(c.timeoutMs, 3000)
+      assert.equal(c.ttlMinutes, 360)
+      assert.deepEqual(c.map[0].set, { risk: "high" })
+      assert.deepEqual(c.map[1].override, { level: "frontier" })
+    })
+
+    it("accepts an http connector", () => {
+      const { config, warnings } = v2({
+        connectors: [
+          {
+            id: "tracker",
+            http: { url: "https://x.test/{task}", method: "POST", body: {} },
+            timeoutMs: 10000,
+            ttlMinutes: 5,
+            map: [],
+          },
+        ],
+      })
+      assert.deepEqual(warnings, [])
+      assert.equal(config.v2.connectors[0].http?.method, "POST")
+      assert.equal(config.v2.connectors[0].timeoutMs, 10000)
+    })
+
+    it("drops a bad connector and keeps the good ones", () => {
+      const { config, warnings } = v2({
+        connectors: [
+          good,
+          { id: "slow", command: ["x"], timeoutMs: 20000 },
+          { id: "nocmd" },
+          { id: "re", command: ["x"], match: { task: "(" } },
+          { id: "map", command: ["x"], map: [{ label: "[" }] },
+          { id: "ttl", command: ["x"], ttlMinutes: 0 },
+          { command: ["x"] },
+          3,
+        ],
+      })
+      assert.deepEqual(
+        config.v2.connectors.map((c) => c.id),
+        ["github"],
+      )
+      assert.equal(warnings.length, 7)
+      assert.match(warnings.join("\n"), /timeoutMs/)
+    })
+
+    it("warns when connectors is not a list", () => {
+      assert.equal(v2({ connectors: {} }).warnings.length, 1)
+    })
+  })
+
+  it("marks agent-only rules", () => {
+    const { config } = buildConfig({
+      rules: [
+        { id: "a", when: { agent: ["explore"] }, tier: "haiku" },
+        { id: "b", when: { agent: "x", prompt: "y" }, tier: "opus" },
+        { id: "c", when: { "hint.files": ">=5" }, tier: "opus" },
+      ],
+    })
+    assert.deepEqual(
+      config.rules.map((r) => r.agentOnly),
+      [true, false, false],
+    )
   })
 })

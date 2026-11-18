@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import { describe, it } from "node:test"
 
-import { parseMarkers } from "./hint.ts"
+import { hintFacts, parseMarkers } from "./hint.ts"
 
 describe("parseMarkers", () => {
   it("reads every hint field and removes the line", () => {
@@ -51,5 +51,54 @@ describe("parseMarkers", () => {
       "[[routes: task=1]] [[advisory: opus]] [route: task=1]",
     )
     assert.equal(m.found, false)
+  })
+})
+
+describe("routing v2 hint fields", () => {
+  it("reads risk, modules, kind, migration and unknowns", () => {
+    const m = parseMarkers(
+      "[[route: task=9 risk=High modules=3 kind=Edit migration=yes unknowns=2]]",
+    )
+    assert.deepEqual(m.hint, {
+      task: "9",
+      risk: "high",
+      modules: 3,
+      kind: "edit",
+      migration: true,
+      unknowns: 2,
+    })
+  })
+
+  it("accepts yes/no/true/false for migration and ignores bad values", () => {
+    const h = (v: string) => parseMarkers(`[[route: migration=${v}]]`).hint
+    assert.equal(h("no").migration, false)
+    assert.equal(h("TRUE").migration, true)
+    assert.equal(h("false").migration, false)
+    assert.equal(h("maybe").migration, undefined)
+    const bad = parseMarkers(
+      "[[route: risk=extreme kind=weird modules=x]]",
+    ).hint
+    assert.deepEqual(bad, {})
+  })
+
+  it("turns the hint into caller facts, with tier as an alias of risk", () => {
+    const facts = (line: string) => hintFacts(parseMarkers(line).hint)
+    const risk = (line: string) =>
+      facts(line).find((i) => i.fact === "risk")?.value
+    assert.equal(risk("[[route: tier=T1]]"), "high")
+    assert.equal(risk("[[route: tier=t2]]"), "medium")
+    assert.equal(risk("[[route: tier=T3]]"), "low")
+    assert.equal(risk("[[route: tier=critical]]"), "critical")
+    assert.equal(risk("[[route: tier=sonnet]]"), undefined)
+    assert.equal(risk("[[route: tier=low risk=high]]"), "high")
+    assert.deepEqual(facts("[[route: task=5 files=12 retry=1]]"), [
+      { fact: "task", value: "5", kind: "caller", source: "hint" },
+      { fact: "retry", value: 1, kind: "caller", source: "hint" },
+      { fact: "files", value: 12, kind: "caller", source: "hint" },
+    ])
+  })
+
+  it("keeps tier as typed for v1 rules", () => {
+    assert.equal(parseMarkers("[[route: tier=T1]]").hint.tier, "t1")
   })
 })

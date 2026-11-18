@@ -3,6 +3,8 @@ import { describe, it } from "node:test"
 
 import { createAdvisor, type SessionInfo } from "./advisor.ts"
 import { buildConfig, type Config } from "./config.ts"
+import type { AdvisorRecord } from "./decisions.ts"
+import type { ConnectorResult } from "./route-v2.ts"
 import type { Span, Telemetry } from "./otel.ts"
 import { traceIdFor } from "./otel.ts"
 
@@ -430,5 +432,140 @@ describe("robustness", () => {
       "anthropic/claude-sonnet-5-5",
     )
     assert.equal(spans[0].traceSession, "ses_child")
+  })
+})
+
+const result = (over: Partial<ConnectorResult> = {}): ConnectorResult => ({
+  id: "gh",
+  ok: true,
+  ms: 5,
+  cached: false,
+  facts: [],
+  ...over,
+})
+
+describe("routing v2 dispatch", () => {
+  const telemetry = {
+    span: () => {},
+    count: () => {},
+    record: () => {},
+    dispose: async () => {},
+  } as unknown as Telemetry
+
+  function v2setup(
+    lookup?: (task: string, agent: string) => Promise<ConnectorResult[]>,
+    extra: object = {},
+  ) {
+    const records: AdvisorRecord[] = []
+    const calls: Array<[string, string]> = []
+    const config = buildConfig({
+      mode: "enforce",
+      v2: { enabled: true },
+      ...extra,
+    }).config
+    const advisor = createAdvisor({
+      config: () => config,
+      telemetry,
+      session: async () => ({ model: "claude-sonnet-5-5" }),
+      record: (r) => records.push(r),
+      connectors: lookup
+        ? {
+            lookup: (task, agent) => {
+              calls.push([task, agent])
+              return lookup(task, agent)
+            },
+          }
+        : undefined,
+    })
+    const decisions = () =>
+      records.filter(
+        (r): r is Extract<AdvisorRecord, { kind: "decision" }> =>
+          r.kind === "decision",
+      )
+    return { advisor, records, calls, decisions }
+  }
+
+  it("routes by the hint's facts and writes v2 into the record", async () => {
+    const t = v2setup()
+    const applied = await t.advisor.decide(
+      dispatch({
+        prompt: "do it\n[[route: task=1 risk=low files=20 modules=3]]",
+      }),
+    )
+    assert.equal(applied?.model, "anthropic/claude-opus-5-5")
+    const [d] = t.decisions()
+    assert.equal(d.tier, "frontier")
+    assert.equal(d.source, "v2")
+    assert.equal(d.v2?.score.total, 4)
+    assert.equal(d.v2?.facts.risk?.source, "hint")
+  })
+
+  it("adds connector facts and records the connector outcome", async () => {
+    const t = v2setup(async () => [
+      result({
+        facts: [
+          { fact: "risk", value: "high", kind: "connector", source: "gh" },
+        ],
+      }),
+      result({ id: "slow", ok: false, ms: 3000, error: "timeout" }),
+    ])
+    await t.advisor.decide(dispatch({ prompt: "[[route: task=42 risk=low]]" }))
+    assert.deepEqual(t.calls, [["42", "builder"]])
+    const [d] = t.decisions()
+    assert.equal(d.tier, "frontier")
+    assert.deepEqual(d.v2?.connectors, [
+      { id: "gh", ok: true, ms: 5, cached: false },
+      { id: "slow", ok: false, ms: 3000, cached: false, error: "timeout" },
+    ])
+    const alert = t.records.find((r) => r.kind === "alert")
+    assert.ok(alert && alert.kind === "alert")
+    assert.equal(alert.alert, "fact-disagreement")
+    assert.match(alert.detail ?? "", /risk: hint=low vs gh=high/)
+  })
+
+  it("applies a connector's override level", async () => {
+    const t = v2setup(async () => [
+      result({ override: { level: "fast", detail: "gh label route:fast" } }),
+    ])
+    await t.advisor.decide(
+      dispatch({ prompt: "[[route: task=7 risk=critical]]" }),
+    )
+    const [d] = t.decisions()
+    assert.deepEqual([d.tier, d.source], ["fast", "override"])
+  })
+
+  it("ignores a failing or throwing connector lookup", async () => {
+    const t = v2setup(async () => {
+      throw new Error("boom")
+    })
+    const applied = await t.advisor.decide(
+      dispatch({ prompt: "[[route: task=7 risk=low]]" }),
+    )
+    assert.equal(applied?.model, "anthropic/claude-haiku-5-5")
+    assert.equal(t.decisions()[0].v2?.connectors.length, 0)
+  })
+
+  it("does not wait past the connector timeout", async () => {
+    const t = v2setup(() => new Promise(() => {}), {
+      v2: {
+        enabled: true,
+        connectors: [{ id: "x", command: ["x"], timeoutMs: 20 }],
+      },
+    })
+    const t0 = Date.now()
+    await t.advisor.decide(dispatch({ prompt: "[[route: task=7 risk=low]]" }))
+    assert.ok(Date.now() - t0 < 2000)
+    assert.equal(t.decisions().length, 1)
+  })
+
+  it("skips the lookup without a task, and when v2 is off", async () => {
+    const none = v2setup(async () => [result()])
+    await none.advisor.decide(dispatch({ prompt: "[[route: risk=low]]" }))
+    assert.deepEqual(none.calls, [])
+
+    const off = v2setup(async () => [result()], { v2: { enabled: false } })
+    await off.advisor.decide(dispatch({ prompt: "[[route: task=1]]" }))
+    assert.deepEqual(off.calls, [])
+    assert.equal(off.decisions()[0].v2, undefined)
   })
 })

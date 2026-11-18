@@ -7,6 +7,7 @@ import { runJudge, type JudgeFn } from "./judge.ts"
 import { log } from "./logger.ts"
 import type { Telemetry } from "./otel.ts"
 import { listCostUsd, savingUsd, type Usage } from "./pricing.ts"
+import type { ConnectorResult, DecisionV2 } from "./route-v2.ts"
 import { route, RouteState, skipReason, type RouteInput } from "./router.ts"
 
 export type SessionInfo = { parentID?: string; model?: string }
@@ -18,6 +19,10 @@ export type Deps = {
   /** Absent when the host offers no one-shot model call; the judge step is then skipped. */
   judge?: JudgeFn
   now?: () => number
+  /** Routing v2 only. Resolves a task's facts from trackers; never throws. */
+  connectors?: {
+    lookup(task: string, agent: string): Promise<ConnectorResult[]>
+  }
   /** Where decisions, alerts and advisor usage go; the decisions file by default. */
   record?: (record: AdvisorRecord) => void
 }
@@ -48,6 +53,21 @@ type Pending = {
   shadow: boolean
 }
 type Child = { agent: string; would: string; model: string; shadow: boolean }
+
+/** Waits for `work` at most `ms`, and never rejects. */
+async function within<T>(work: Promise<T>, ms: number): Promise<T | undefined> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const late = new Promise<undefined>((resolve) => {
+    timer = setTimeout(resolve, ms, undefined)
+  })
+  try {
+    return await Promise.race([work, late])
+  } catch {
+    return undefined
+  } finally {
+    clearTimeout(timer)
+  }
+}
 
 const PENDING_TTL_MS = 10 * 60_000
 const MAX_CHILDREN = 2000
@@ -102,6 +122,35 @@ export function createAdvisor(deps: Deps) {
       prompt: markers.stripped,
       hint: markers.hint,
       override: markers.override,
+    }
+
+    if (config.v2.enabled && deps.connectors && markers.hint.task) {
+      const limit = config.v2.connectors.length
+        ? Math.max(...config.v2.connectors.map((c) => c.timeoutMs))
+        : 3000
+      const results =
+        (await within(
+          Promise.resolve(deps.connectors.lookup(markers.hint.task, agent)),
+          limit,
+        )) ?? []
+      const override = results.find((r) => r.override?.level)?.override
+      input.v2 = {
+        facts: results.flatMap((r) => r.facts),
+        override: override && {
+          level: override.level,
+          detail: override.detail,
+        },
+        connectors: results.map((r) => {
+          const c: DecisionV2["connectors"][number] = {
+            id: r.id,
+            ok: r.ok,
+            ms: r.ms,
+            cached: r.cached,
+          }
+          if (r.error) c.error = r.error
+          return c
+        }),
+      }
     }
 
     let result = route(input, effective, state)
@@ -184,7 +233,26 @@ export function createAdvisor(deps: Deps) {
       rule: decision.rule,
       reason: decision.reason.slice(0, 200),
       task: markers.hint.task,
+      ...(decision.v2 ? { v2: decision.v2 } : {}),
     })
+    if (decision.v2?.disagreements.length) {
+      record({
+        v: 1,
+        kind: "alert",
+        t: stamp(),
+        alert: "fact-disagreement",
+        agent,
+        session: d.sessionID,
+        task: markers.hint.task,
+        detail: decision.v2.disagreements
+          .map(
+            (x) =>
+              `${x.fact}: ${x.values.map((v) => `${v.source}=${String(v.value)}`).join(" vs ")} → ${String(x.chosen)}`,
+          )
+          .join("; ")
+          .slice(0, 160),
+      })
+    }
 
     deps.telemetry.count("model_advisor.decisions", {
       agent,
@@ -222,6 +290,7 @@ export function createAdvisor(deps: Deps) {
           judgeMs === undefined ? undefined : Math.round(judgeMs),
         "route.alert": decision.alert,
       },
+      v2: decision.v2,
     })
 
     const key = `${d.sessionID}|${agent}`
