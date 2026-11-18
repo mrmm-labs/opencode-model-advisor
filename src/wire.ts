@@ -5,6 +5,7 @@ import {
 } from "./advisor-tool.ts"
 import { createAdvisor, type Advisor, type SessionInfo } from "./advisor.ts"
 import { ConfigStore, type Config } from "./config.ts"
+import { createConnectors } from "./connectors.ts"
 import { appendRecord } from "./decisions.ts"
 import { track } from "./guard.ts"
 import { registerHooks } from "./hooks.ts"
@@ -43,9 +44,20 @@ export function createCore(host: Host, store = new ConfigStore()): Core {
     judge: config.judge.enabled && !!host.judge,
     otel: !!otelTarget(config),
   })
+  // Rebuilt when the connector config changes (live reload); the cache goes with it.
+  let conn: { key: string; c: ReturnType<typeof createConnectors> } | undefined
+  const connectors = {
+    lookup(task: string, agent: string) {
+      const cfgs = store.get().v2.connectors
+      const key = JSON.stringify(cfgs)
+      if (conn?.key !== key) conn = { key, c: createConnectors(cfgs) }
+      return conn.c.lookup(task, agent)
+    },
+  }
   const advisor = createAdvisor({
     config: () => store.get(),
     telemetry,
+    connectors,
     ...host,
   })
   const untrack = track(advisor)
