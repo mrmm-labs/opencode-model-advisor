@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.2](https://github.com/mrmm-labs/opencode-model-advisor/compare/v0.1.1...v0.1.2) (2026-11-18)
+
+
+### Bug Fixes
+
+* timestamps use the wall clock, which keeps running while the machine sleeps ([#9](https://github.com/mrmm-labs/opencode-model-advisor/issues/9)) ([dc4dbd8](https://github.com/mrmm-labs/opencode-model-advisor/commit/dc4dbd8a3a5e95d577c2bcb6d161ae4baf89e295))
+
 ## [0.1.1](https://github.com/mrmm-labs/opencode-model-advisor/compare/v0.1.0...v0.1.1) (2026-11-18)
 
 
