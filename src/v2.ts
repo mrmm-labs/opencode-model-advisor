@@ -53,7 +53,9 @@ export async function setup(ctx: Context) {
     }
   })
 
-  const run = advisor.tool
+  // Registered only when routing v2 is on at load: tool catalogs can list a registered
+  // tool even where the context hook below removes it, so v2 off means no tool at all.
+  const run = advisor.config().v2.enabled ? advisor.tool : undefined
   if (run) {
     await ctx.tool.transform((editor) =>
       editor.add({
