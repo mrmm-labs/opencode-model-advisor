@@ -2,8 +2,7 @@
  * What the TUI shows, as plain functions over the decisions stream: the
  * sidebar panel, the decisions list and the alert toasts. No UI types in here.
  */
-import { homedir } from "node:os"
-import { join } from "node:path"
+import { calibrationPath } from "./calibrate.ts"
 
 import { getAt, parsePath, type Path } from "./config-edit.ts"
 import type { Config } from "./config.ts"
@@ -749,12 +748,7 @@ export type CalibrationView = {
 }
 
 /** Where calibration.json is written (the same place the calibrate command uses). */
-export function calibrationFile(env: NodeJS.ProcessEnv = process.env): string {
-  if (env.OPENCODE_MODEL_ADVISOR_CALIBRATION)
-    return env.OPENCODE_MODEL_ADVISOR_CALIBRATION
-  const data = env.XDG_DATA_HOME || join(homedir(), ".local", "share")
-  return join(data, "opencode", "model-advisor", "calibration.json")
-}
+export const calibrationFile = calibrationPath
 
 /** The file's text as a calibration, or undefined when it is not one. */
 export function parseCalibration(text: string): CalibrationView | undefined {

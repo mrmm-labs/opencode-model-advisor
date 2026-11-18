@@ -29,7 +29,9 @@ import {
   type Path,
 } from "../dist/config-edit.js"
 import { RecordReader } from "../dist/decisions.js"
+import { createConnectors } from "../dist/connectors.js"
 import { explain } from "../dist/explain.js"
+import { hintFacts, parseMarkers } from "../dist/hint.js"
 import { parseJsonc } from "../dist/jsonc.js"
 import {
   alertToast,
@@ -242,10 +244,14 @@ function start(host: Host): () => void {
       placeholder: "[[route: task=1047 risk=high files=12]] or a task id",
     })
     if (!line?.trim()) return
-    // Connectors are not wired into the TUI process yet: shown as not configured.
-    const result = await checkDecision(line, loadConfig().v2, {
+    const v2 = loadConfig().v2
+    const result = await checkDecision(line, v2, {
       explain,
-      parseHint: parseHintFacts,
+      parseHint: (text) =>
+        /\[\[\s*route\s*:/i.test(text)
+          ? hintFacts(parseMarkers(text).hint)
+          : parseHintFacts(text),
+      connectors: createConnectors(v2.connectors),
     })
     await host.alert(
       result.ok ? "Model router: check" : "Model router: check failed",

@@ -295,7 +295,7 @@ describe("validated edit", () => {
     const effective = {
       v2: {
         difficulty: {
-          points: [{ fact: "files", add: 1 }],
+          points: [{ fact: "files", gte: 15, add: 1 }],
           cutoffs: { medium: 2, high: 4 },
         },
       },
