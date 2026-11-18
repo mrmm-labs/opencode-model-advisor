@@ -8,6 +8,9 @@
  */
 import { createHash, randomBytes } from "node:crypto"
 
+import { connectorSpans, v2Attributes } from "./otel-v2.ts"
+import type { DecisionV2 } from "./route-v2.ts"
+
 export type OtelTarget = { endpoint: string; headers?: Record<string, string> }
 
 export type Attr = string | number | boolean | undefined
@@ -21,6 +24,8 @@ export type Span = {
   start: number
   end: number
   attrs: Record<string, Attr>
+  /** Routing v2 detail; adds its `route.*` and `connector.*` attributes, and one span per connector call. */
+  v2?: DecisionV2
   error?: string
 }
 
@@ -80,7 +85,11 @@ export function encodeSpans(spans: readonly Span[]): object {
               startTimeUnixNano: nanos(s.start),
               // A zero-length span reads as a negative duration in some viewers.
               endTimeUnixNano: nanos(Math.max(s.end, s.start + 0.001)),
-              attributes: attributes({ "session.id": s.session, ...s.attrs }),
+              attributes: attributes({
+                "session.id": s.session,
+                ...s.attrs,
+                ...(s.v2 && v2Attributes(s.v2)),
+              }),
               status: s.error ? { code: 2, message: s.error } : { code: 1 },
             })),
           },
@@ -233,6 +242,7 @@ export class Telemetry {
     if (!this.target()) return
     if (this.queue.length >= MAX_QUEUE) this.queue.shift()
     this.queue.push(span)
+    if (span.v2) this.queue.push(...connectorSpans(span.v2, span))
     this.arm()
   }
 

@@ -3,6 +3,7 @@ import assert from "node:assert/strict"
 import { describe, it } from "node:test"
 
 import { encodeSpans, MetricBuffer, Telemetry, traceIdFor } from "./otel.ts"
+import { decision } from "./otel-v2.fixtures.test.ts"
 
 describe("traceIdFor", () => {
   it("matches the sha256-prefix algorithm other plugins use for a root session", () => {
@@ -211,5 +212,51 @@ describe("Telemetry", () => {
     const spans = calls[0].body.resourceSpans[0].scopeSpans[0].spans
     assert.equal(spans.length, 2000)
     assert.equal(spans[0].name, "s5")
+  })
+})
+
+const keys = (span: any) => span.attributes.map((a: any) => a.key)
+
+describe("routing v2 spans", () => {
+  it("adds v2 attributes only when the decision carries v2", () => {
+    const body = encodeSpans([
+      { name: "route a", start: 1, end: 2, attrs: { "route.tier": "opus" } },
+      {
+        name: "route b",
+        start: 1,
+        end: 2,
+        attrs: { "route.tier": "opus" },
+        v2: decision(),
+      },
+    ]) as any
+    const [v1, v2] = body.resourceSpans[0].scopeSpans[0].spans
+    assert.deepEqual(keys(v1), ["route.tier"])
+    assert.ok(keys(v2).includes("route.tier"))
+    assert.ok(keys(v2).includes("route.level"))
+    assert.ok(keys(v2).includes("route.fact.risk.source"))
+  })
+
+  it("queues one connector span per call next to the decision span", async () => {
+    const { calls, post } = sink()
+    const t = new Telemetry(() => ({ endpoint: "http://c" }), post, 60_000)
+    t.span({
+      name: "route a",
+      session: "s",
+      start: 1,
+      end: 2,
+      attrs: {},
+      v2: decision(),
+    })
+    t.span({ name: "route b", start: 1, end: 2, attrs: {} })
+    await t.dispose()
+    const names = calls[0].body.resourceSpans[0].scopeSpans[0].spans.map(
+      (s: any) => s.name,
+    )
+    assert.deepEqual(names, [
+      "route a",
+      "connector github",
+      "connector linear",
+      "route b",
+    ])
   })
 })
