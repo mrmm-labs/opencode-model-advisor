@@ -29,7 +29,7 @@ Continuing an existing child session is never re-routed.
 Needs OpenCode 2. OpenCode 1 works too, with fewer features (see Limitations).
 
 ```sh
-pnpm install && pnpm run build
+mise install && mise run build   # or: pnpm install && pnpm run build (Node 24, pnpm 10)
 ```
 
 Put the folder where OpenCode loads plugins from (OpenCode 2 wants a directory with an `index.js`),
@@ -364,9 +364,13 @@ more goes to `estimated_extra_cost_usd` instead, so both counters only grow.
 
 ## Development
 
+Tool versions (Node, pnpm, bun) come from `mise.toml`; `mise install` sets them up.
+
 ```sh
-pnpm install
-pnpm run typecheck && pnpm run lint && pnpm test
+mise run check              # everything CI runs: lint, typecheck, tests, build, TUI checks, pack
+mise run test               # unit tests only
+mise run calibrate          # routing v2 calibration from your decisions log (suggestions only)
+mise run grafana            # regenerate grafana/model-router.json
 pnpm run check:tui          # type-check the TUI (after a build)
 pnpm run check:v2           # run the TUI entry against a fake OpenCode 2 context (needs bun)
 pnpm run test:tui           # load the TUI in an isolated OpenCode, in a pseudo-terminal

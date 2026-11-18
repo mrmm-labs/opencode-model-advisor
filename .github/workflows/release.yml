@@ -41,16 +41,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.release-please.outputs.tag }}
-      - uses: pnpm/action-setup@v4
-      # Node 24 ships npm 11, which publishes through npm trusted publishing (OIDC).
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "24"
-          cache: "pnpm"
-          registry-url: "https://registry.npmjs.org"
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm run build
-      - run: pnpm test
+      # Tool versions from mise.toml. Node 24 ships npm 11, which publishes through npm
+      # trusted publishing (OIDC).
+      - uses: jdx/mise-action@v2
+      - run: mise run build
+      - run: mise run test
       - name: Pack
         id: pack
         run: |
@@ -65,4 +60,8 @@ jobs:
       - name: Publish to npm
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm publish "${{ steps.pack.outputs.file }}" --provenance --access public
+        run: |
+          if [ -n "$NODE_AUTH_TOKEN" ]; then
+            echo "//registry.npmjs.org/:_authToken=\${NODE_AUTH_TOKEN}" > "$HOME/.npmrc"
+          fi
+          npm publish "${{ steps.pack.outputs.file }}" --provenance --access public
