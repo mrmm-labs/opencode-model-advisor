@@ -143,6 +143,11 @@ export type RoutingV2Config = {
     minFirstPass: number
     /** Ignore buckets with fewer tasks. */
     minTasks: number
+    /**
+     * Agents whose re-dispatch of a task counts as a retry. Reviewers re-run every round, so
+     * counting them would read every review round as a failure. Empty = every agent.
+     */
+    retryAgents: string[]
   }
 }
 
@@ -179,7 +184,7 @@ export const defaultRoutingV2 = (): RoutingV2Config => ({
   defaults: { risk: "medium" },
   connectors: [],
   advisor: { level: "frontier", impl: "auto" },
-  calibration: { minFirstPass: 0.7, minTasks: 5 },
+  calibration: { minFirstPass: 0.7, minTasks: 5, retryAgents: ["builder"] },
 })
 
 /** What the v2 path adds to a decision; also written to decisions.jsonl as `v2`. */
