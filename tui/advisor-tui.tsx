@@ -17,19 +17,38 @@ import type {
 import type { Plugin } from "@opencode/plugin/tui"
 import type { JSX } from "@opentui/solid"
 import { readFileSync } from "node:fs"
+import { basename } from "node:path"
 import { createSignal, For, Show } from "solid-js"
 
 import { buildConfig, configPath, defaultConfig } from "../dist/config.js"
-import { readPins, setMode, setPin } from "../dist/config-edit.js"
+import {
+  editValidated,
+  readPins,
+  setMode,
+  setPin,
+  type Path,
+} from "../dist/config-edit.js"
 import { RecordReader } from "../dist/decisions.js"
+import { explain } from "../dist/explain.js"
 import { parseJsonc } from "../dist/jsonc.js"
 import {
   alertToast,
   AlertWatcher,
+  calibrationFile,
+  calibrationReport,
+  checkDecision,
   decisionDetail,
   decisionRows,
+  parseCalibration,
+  parseHintFacts,
+  parseSettingValue,
   routerPanel,
+  SECTIONS,
+  settingRows,
+  suggestionEdit,
+  suggestionOptions,
   type Panel,
+  type SettingRow,
 } from "../dist/view.js"
 
 type Option<T> = {
@@ -58,6 +77,11 @@ type Host = {
   commands: (list: Command[]) => void
   select: <T>(title: string, options: Option<T>[]) => Promise<T | undefined>
   confirm: (title: string, message: string) => Promise<boolean>
+  alert: (title: string, message: string) => Promise<void>
+  prompt: (
+    title: string,
+    options?: { placeholder?: string; value?: string },
+  ) => Promise<string | undefined>
   toast: (toast: Toast) => void
 }
 
@@ -212,6 +236,146 @@ function start(host: Host): () => void {
     }
   }
 
+  // Dry run of a hint line or task id: what the router would decide, and why.
+  const check = async () => {
+    const line = await host.prompt("Model router: check", {
+      placeholder: "[[route: task=1047 risk=high files=12]] or a task id",
+    })
+    if (!line?.trim()) return
+    // Connectors are not wired into the TUI process yet: shown as not configured.
+    const result = await checkDecision(line, loadConfig().v2, {
+      explain,
+      parseHint: parseHintFacts,
+    })
+    await host.alert(
+      result.ok ? "Model router: check" : "Model router: check failed",
+      result.lines.join("\n"),
+    )
+  }
+
+  // Every config change from here is validated, and backed up before it is written.
+  const save = (what: string, path: Path, value: unknown) => {
+    const cfg = loadConfig()
+    const result = editValidated(path, value, configPath(), {
+      mode: cfg.mode,
+      v2: cfg.v2,
+    })
+    host.toast(
+      result.ok
+        ? {
+            variant: "success",
+            title: "Saved",
+            message: `${what}.${result.backup ? ` Backup ${basename(result.backup)}.` : ""} Live within a few seconds.`,
+          }
+        : { variant: "error", title: "Not saved", message: result.reason },
+    )
+    return result.ok
+  }
+
+  const editRow = async (row: SettingRow) => {
+    let action = "edit"
+    if (row.removable) {
+      const picked = await host.select(row.title, [
+        { title: "Edit", value: "edit" },
+        { title: "Remove", value: "remove" },
+      ])
+      if (!picked) return
+      action = picked
+    }
+    if (action === "remove") {
+      save(`${row.title} removed`, row.path, undefined)
+      return
+    }
+    const raw = row.choices
+      ? await host.select(
+          row.title,
+          row.choices.map((c) => ({
+            title: c,
+            value: c,
+            description: c === row.shown ? "current" : undefined,
+          })),
+        )
+      : await host.prompt(row.title, {
+          placeholder: row.kind,
+          value: row.initial,
+        })
+    if (raw === undefined) return
+    const parsed = parseSettingValue(row.kind, raw)
+    if (!parsed.ok)
+      return host.toast({
+        variant: "error",
+        title: "Not saved",
+        message: parsed.reason,
+      })
+    save(`${row.title} set`, row.path, parsed.value)
+  }
+
+  const settings = async () => {
+    const section = await host.select(
+      "Model router: settings",
+      SECTIONS.map((s) => ({
+        title: s.title,
+        value: s.id,
+        description: s.description,
+      })),
+    )
+    if (!section) return
+    const name = SECTIONS.find((s) => s.id === section)?.title ?? section
+    for (;;) {
+      const row = await host.select(
+        `Settings: ${name}`,
+        settingRows(section, loadConfig()).map((r) => ({
+          title: r.title,
+          value: r,
+          description: r.shown,
+        })),
+      )
+      if (!row) return
+      await editRow(row)
+    }
+  }
+
+  // Suggestions are the operator's to apply, one at a time, through the same validated edit.
+  const calibration = async () => {
+    let text: string | undefined
+    try {
+      text = readFileSync(calibrationFile(), "utf8")
+    } catch {}
+    const c = text === undefined ? undefined : parseCalibration(text)
+    if (!c)
+      return host.toast({
+        variant: "info",
+        title: "Calibration",
+        message: "No calibration yet. Run the calibrate command first.",
+      })
+    const options = suggestionOptions(c)
+    const pick = await host.select("Model router: calibration", [
+      { title: "Show report", value: "report", category: "Report" },
+      ...options,
+    ])
+    if (!pick) return
+    if (pick === "report")
+      return host.alert("Calibration", calibrationReport(c).join("\n"))
+    const option = options.find((o) => o.value === pick)
+    const s = c.suggestions.find((x) => x.id === pick)
+    if (!option || !s) return
+    if (!option.applicable) return host.alert(s.path, s.why)
+    const edit = suggestionEdit(s, loadConfig())
+    if (!edit.ok)
+      return host.toast({
+        variant: "error",
+        title: "Not applied",
+        message: edit.reason,
+      })
+    if (
+      await host.confirm(
+        "Apply suggestion?",
+        `${s.path}: ${s.from} → ${s.to}\n${s.why}`,
+      )
+    )
+      save(`${s.path} set to ${s.to}`, edit.path, edit.value)
+  }
+
   host.commands([
     {
       id: "model-advisor.mode",
@@ -250,9 +414,26 @@ function start(host: Host): () => void {
           })
         const id = await host.select("Model router: last 20 decisions", rows)
         const detail = id && decisionDetail(reader.read(), id)
-        if (detail)
-          host.toast({ variant: "info", title: "Decision", message: detail })
+        if (detail) await host.alert("Decision", detail)
       },
+    },
+    {
+      id: "model-advisor.check",
+      title: "Model router: check",
+      slash: "advisor-check",
+      run: check,
+    },
+    {
+      id: "model-advisor.settings",
+      title: "Model router: settings",
+      slash: "advisor-settings",
+      run: settings,
+    },
+    {
+      id: "model-advisor.calibration",
+      title: "Model router: calibration",
+      slash: "advisor-calibration",
+      run: calibration,
     },
   ])
 
@@ -300,6 +481,13 @@ function hostV2(ctx: V2Context): Host {
     select: (title, options) => ctx.ui.dialog.select({ title, options }),
     confirm: async (title, message) =>
       (await ctx.ui.dialog.confirm({ title, message })) === true,
+    alert: (title, message) => ctx.ui.dialog.alert({ title, message }),
+    prompt: (title, options) =>
+      ctx.ui.dialog.prompt({
+        title,
+        ...(options?.placeholder ? { placeholder: options.placeholder } : {}),
+        ...(options?.value ? { value: options.value } : {}),
+      }),
     toast: (toast) => ctx.ui.toast.show(toast),
   }
 }
@@ -381,6 +569,55 @@ function hostV1(api: TuiPluginApi): Host {
             />
           ),
           () => finish(false),
+        )
+      }),
+    alert: (title, message) =>
+      new Promise((resolve) => {
+        let done = false
+        const finish = () => {
+          if (done) return
+          done = true
+          resolve()
+        }
+        api.ui.dialog.replace(
+          () => (
+            <api.ui.DialogAlert
+              title={title}
+              message={message}
+              onConfirm={() => {
+                finish()
+                api.ui.dialog.clear()
+              }}
+            />
+          ),
+          finish,
+        )
+      }),
+    prompt: (title, options) =>
+      new Promise((resolve) => {
+        let done = false
+        const finish = (value: string | undefined) => {
+          if (done) return
+          done = true
+          resolve(value)
+        }
+        api.ui.dialog.replace(
+          () => (
+            <api.ui.DialogPrompt
+              title={title}
+              placeholder={options?.placeholder}
+              value={options?.value}
+              onConfirm={(value) => {
+                finish(value)
+                api.ui.dialog.clear()
+              }}
+              onCancel={() => {
+                finish(undefined)
+                api.ui.dialog.clear()
+              }}
+            />
+          ),
+          () => finish(undefined),
         )
       }),
     toast: (toast) => api.ui.toast(toast),
