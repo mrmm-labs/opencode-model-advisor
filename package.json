@@ -51,6 +51,7 @@
     "lint:fix": "oxlint --fix . && oxfmt --write .",
     "format": "oxfmt --write .",
     "prepublishOnly": "pnpm run build && pnpm test",
+    "gen:grafana": "node --experimental-strip-types scripts/gen-grafana.ts && oxfmt --write grafana",
     "calibrate": "node --experimental-strip-types scripts/calibrate.ts",
     "check:tui": "tsc -p tui/tsconfig.json",
     "test:tui": "pnpm run build && python3 scripts/tui-e2e.py",

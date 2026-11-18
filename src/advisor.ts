@@ -290,6 +290,7 @@ export function createAdvisor(deps: Deps) {
           judgeMs === undefined ? undefined : Math.round(judgeMs),
         "route.alert": decision.alert,
       },
+      v2: decision.v2,
     })
 
     const key = `${d.sessionID}|${agent}`

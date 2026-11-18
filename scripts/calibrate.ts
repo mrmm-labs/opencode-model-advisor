@@ -21,6 +21,7 @@ import {
 } from "../src/calibrate.ts"
 import { ConfigStore } from "../src/config.ts"
 import { logPath } from "../src/logger.ts"
+import { exportCalibration } from "../src/otel-v2.ts"
 
 const args = process.argv.slice(2)
 const cmd = args[0]
@@ -76,10 +77,10 @@ function print(c: Calibration): void {
 
 async function main(): Promise<void> {
   if (cmd === "run") {
-    const c = await runCalibration({
-      cfg: new ConfigStore().get().v2,
-      days: num("days", 30),
-    })
+    const config = new ConfigStore().get()
+    const c = await runCalibration({ cfg: config.v2, days: num("days", 30) })
+    const sent = await exportCalibration(config.otel)
+    if (sent) console.error(`exported ${sent} calibration spans`)
     if (args.includes("--json")) console.log(JSON.stringify(c, null, 2))
     else print(c)
   } else if (cmd === "install") {
