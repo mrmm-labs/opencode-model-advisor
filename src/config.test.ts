@@ -55,12 +55,24 @@ describe("buildConfig", () => {
   })
 
   it("reads the sidebar position and warns on a bad one", () => {
-    assert.equal(buildConfig({}).config.tui.position, "top")
-    const ok = buildConfig({ tui: { position: "bottom" } })
-    assert.equal(ok.config.tui.position, "bottom")
+    assert.equal(buildConfig({}).config.tui.position, "bottom")
+    const ok = buildConfig({ tui: { position: "top" } })
+    assert.equal(ok.config.tui.position, "top")
     assert.deepEqual(ok.warnings, [])
     const bad = buildConfig({ tui: { position: "left" } })
-    assert.equal(bad.config.tui.position, "top")
+    assert.equal(bad.config.tui.position, "bottom")
+    assert.equal(bad.warnings.length, 1)
+  })
+
+  it("reads the sidebar mode, compact by default, and warns on a bad one", () => {
+    assert.equal(buildConfig({}).config.tui.sidebar, "compact")
+    for (const sidebar of ["full", "compact", "off"] as const) {
+      const ok = buildConfig({ tui: { sidebar } })
+      assert.equal(ok.config.tui.sidebar, sidebar)
+      assert.deepEqual(ok.warnings, [])
+    }
+    const bad = buildConfig({ tui: { sidebar: "tiny" } })
+    assert.equal(bad.config.tui.sidebar, "compact")
     assert.equal(bad.warnings.length, 1)
   })
 

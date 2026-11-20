@@ -1,6 +1,6 @@
 /** @jsxImportSource @opentui/solid */
 /**
- * The router's TUI: a sidebar panel per session, three commands and alert toasts.
+ * The router's TUI: a compact sidebar section per session, a detail dialog, commands and alert toasts.
  *
  * It runs in a different process from the server plugin, so it never touches
  * the router. It reads the decisions file the plugin appends to, and changes
@@ -34,23 +34,29 @@ import { explain } from "../dist/explain.js"
 import { hintFacts, parseMarkers } from "../dist/hint.js"
 import { parseJsonc } from "../dist/jsonc.js"
 import {
+  alertLines,
   alertToast,
   AlertWatcher,
   calibrationFile,
   calibrationReport,
   checkDecision,
+  compactPanel,
   decisionDetail,
   decisionRows,
   parseCalibration,
   parseHintFacts,
   parseSettingValue,
   routerPanel,
+  rulesLines,
   SECTIONS,
+  sessionLines,
   settingRows,
   suggestionEdit,
   suggestionOptions,
+  type CompactPanel,
   type Panel,
   type SettingRow,
+  type Tone,
 } from "../dist/view.js"
 
 type Option<T> = {
@@ -66,7 +72,12 @@ type Toast = {
 }
 type Command = { id: string; title: string; slash: string; run: () => void }
 
-type Colours = { text: unknown; muted: unknown; changed: unknown }
+type Colours = {
+  text: unknown
+  muted: unknown
+  changed: unknown
+  good: unknown
+}
 type Position = "top" | "bottom"
 
 type Host = {
@@ -112,8 +123,50 @@ function start(host: Host): () => void {
 
   // Folding lasts for this TUI run; a click on the heading toggles it.
   const [folded, setFolded] = createSignal(false)
-  const position = loadConfig().tui.position
-  host.sidebar(position, (session) => {
+  const { sidebar, position } = loadConfig().tui
+
+  const compact = (session: string) => {
+    lastSession = session
+    const panel = () => compactPanel(records(), session) as CompactPanel
+    const c = () => host.colours() as Record<keyof Colours, never>
+    const tone = (t: Tone | undefined, plain: never) =>
+      t === "good" ? c().good : t === "changed" ? c().changed : plain
+    return (
+      <Show when={panel()}>
+        <box
+          paddingTop={position === "bottom" ? 1 : 0}
+          paddingBottom={position === "top" ? 1 : 0}
+        >
+          <text fg={c().text} onMouseUp={() => void hub(session)}>
+            <b>Model router</b>
+            <span style={{ fg: c().muted }}>{` \u00b7 ${panel().mode}`}</span>
+          </text>
+          <For each={panel().rows}>
+            {(row) => (
+              <text fg={c().text}>
+                <span style={{ fg: c().muted }}>{`  ${row.label}`}</span>
+                <span
+                  style={{
+                    fg: row.marker ? c().text : tone(row.tone, c().text),
+                  }}
+                >
+                  {row.value}
+                </span>
+                <span style={{ fg: tone(row.tone, c().muted) }}>
+                  {row.marker ? ` ${row.marker}` : ""}
+                </span>
+                <span style={{ fg: c().muted }}>
+                  {row.detail ? `  ${row.detail}` : ""}
+                </span>
+              </text>
+            )}
+          </For>
+        </box>
+      </Show>
+    )
+  }
+
+  const full = (session: string) => {
     lastSession = session
     const panel = () => routerPanel(records(), session)
     const p = () => panel() as Panel
@@ -160,7 +213,10 @@ function start(host: Host): () => void {
         </box>
       </Show>
     )
-  })
+  }
+
+  if (sidebar !== "off")
+    host.sidebar(position, sidebar === "full" ? full : compact)
 
   const report = (what: string, result: { ok: boolean; reason?: string }) =>
     host.toast(
@@ -382,7 +438,7 @@ function start(host: Host): () => void {
       save(`${s.path} set to ${s.to}`, edit.path, edit.value)
   }
 
-  host.commands([
+  const commands: Command[] = [
     {
       id: "model-advisor.mode",
       title: "advisor: mode",
@@ -441,6 +497,61 @@ function start(host: Host): () => void {
       slash: "advisor-calibration",
       run: calibration,
     },
+  ]
+
+  // The detail the compact sidebar leaves out. Opened by a click on its
+  // title or by /advisor; every other command is reachable from here too.
+  async function hub(session?: string) {
+    const id = session ?? host.currentSession() ?? lastSession
+    const pick = await host.select("Model router", [
+      {
+        title: "This session",
+        value: "session",
+        description: "decisions and advisor usage",
+        category: "Details",
+      },
+      {
+        title: "Rules",
+        value: "rules",
+        description: "rules, pins, default tier",
+        category: "Details",
+      },
+      {
+        title: "Alerts",
+        value: "alerts",
+        description: "recent alerts",
+        category: "Details",
+      },
+      ...commands.map((c) => ({
+        title: c.title,
+        value: c.id,
+        description: `/${c.slash}`,
+        category: "Actions",
+      })),
+    ])
+    if (!pick) return
+    const show = (title: string, lines: string[]) =>
+      host.alert(title, lines.join("\n"))
+    if (pick === "session")
+      return show(
+        "Model router: this session",
+        id ? sessionLines(reader.read(), id) : ["Open a session first."],
+      )
+    if (pick === "rules")
+      return show("Model router: rules", rulesLines(loadConfig()))
+    if (pick === "alerts")
+      return show("Model router: alerts", alertLines(reader.read()))
+    await commands.find((c) => c.id === pick)?.run()
+  }
+
+  host.commands([
+    {
+      id: "model-advisor.open",
+      title: "Model router",
+      slash: "advisor",
+      run: () => void hub(),
+    },
+    ...commands,
   ])
 
   return () => clearInterval(timer)
@@ -459,6 +570,7 @@ function hostV2(ctx: V2Context): Host {
       text: colour(theme.text?.base),
       muted: colour(theme.text?.muted),
       changed: colour(theme.text?.feedback?.warning),
+      good: colour(theme.text?.feedback?.success),
     }),
     currentSession: () => {
       const route = ctx.ui.router.current()
@@ -504,6 +616,7 @@ function hostV1(api: TuiPluginApi): Host {
       text: api.theme.current.text,
       muted: api.theme.current.textMuted,
       changed: api.theme.current.warning,
+      good: api.theme.current.success,
     }),
     currentSession: () => undefined,
     sidebar: (position, render) => {

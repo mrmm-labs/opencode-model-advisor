@@ -39,6 +39,13 @@ writeFileSync(
       rule: "r",
       reason: "rule r",
     },
+    {
+      v: 1,
+      kind: "saving",
+      t: new Date().toISOString(),
+      session: "c",
+      usd: 1.5,
+    },
   ]
     .map((r) => JSON.stringify(r))
     .join("\n") + "\n",
@@ -81,25 +88,63 @@ assert.equal(typeof plugin.tui, "function")
 const stop = plugin.setup(ctx as never)
 
 assert.equal(slots.length, 1)
-assert.equal(slots[0].prepend, "sidebar.content")
+assert.equal(slots[0].append, "sidebar.content")
+assert.equal(slots[0].prepend, undefined)
 
-// The sidebar renders the router panel for the session, in a headless renderer.
+// The sidebar renders in a headless renderer. FRAMES=1 prints what it drew.
 const { testRender } = await import("@opentui/solid")
-const shown = await testRender(() => slots[0].render({ sessionID: "s1" }), {
-  width: 40,
-  height: 6,
-})
-await shown.renderOnce()
-const frame = shown.captureCharFrame()
-assert.match(frame, /Model router shadow/)
-assert.match(frame, /^  builder  opus → sonnet\s*$/m)
-assert.match(frame, /^    r\s*$/m)
-shown.renderer.destroy()
+const draw = async (slot: any, height = 6) => {
+  const shown = await testRender(() => slot.render({ sessionID: "s1" }), {
+    width: 38,
+    height,
+  })
+  await shown.renderOnce()
+  const frame = shown.captureCharFrame()
+  shown.renderer.destroy()
+  return frame
+}
+const compactFrame = await draw(slots[0])
+assert.match(compactFrame, /^Model router · shadow\s*$/m)
+assert.match(compactFrame, /^ {2}Now {5}opus-5-5 {2}\(rule r\)\s*$/m)
+assert.match(compactFrame, /^ {2}Would {3}sonnet-5-5 ▼\s*$/m)
+assert.match(compactFrame, /^ {2}Saved {3}\$1\.50 today\s*$/m)
+assert.equal(compactFrame.split("\n").filter((l) => l.trim()).length, 4)
+
+// "full" keeps the old per-decision block, "off" registers nothing.
+const cfgFile = process.env.OPENCODE_MODEL_ADVISOR_CONFIG
+const base = readFileSync(cfgFile, "utf8")
+const mount = (sidebar: string) => {
+  writeFileSync(
+    cfgFile,
+    base.replace('"pins"', `"tui": {"sidebar": "${sidebar}"}, "pins"`),
+  )
+  const claimed: any[] = []
+  const stopOne = plugin.setup({
+    ...ctx,
+    ui: { ...ctx.ui, slot: (c: any) => claimed.push(c) },
+    keymap: { layer: () => {} },
+  } as never)
+  return { claimed, stopOne }
+}
+const fullMount = mount("full")
+const fullFrame = await draw(fullMount.claimed[0])
+assert.match(fullFrame, /Model router shadow/)
+assert.match(fullFrame, /^ {2}builder {2}opus → sonnet\s*$/m)
+assert.match(fullFrame, /^ {4}r\s*$/m)
+fullMount.stopOne()
+const offMount = mount("off")
+assert.equal(offMount.claimed.length, 0)
+offMount.stopOne()
+writeFileSync(cfgFile, base)
+if (process.env.FRAMES) {
+  console.log(`--- compact ---\n${compactFrame}\n--- full ---\n${fullFrame}`)
+}
 
 const commands = layers[0].commands
 assert.deepEqual(
   commands.map((c: any) => c.slash.name),
   [
+    "advisor",
     "advisor-mode",
     "advisor-pin",
     "advisor-decisions",
@@ -112,6 +157,28 @@ assert.ok(commands.every((c: any) => c.palette === true))
 
 const run = (slash: string) =>
   commands.find((c: any) => c.slash.name === slash).run()
+
+// /advisor and a click on the section title open the same hub, with the
+// detail the sidebar leaves out.
+selectAnswers.push("session", "rules", "alerts")
+for (let i = 0; i < 3; i++) {
+  run("advisor")
+  await new Promise((r) => setTimeout(r, 40))
+}
+assert.equal(selects[0].title, "Model router")
+assert.deepEqual(
+  selects[0].options.slice(0, 3).map((o: any) => o.value),
+  ["session", "rules", "alerts"],
+)
+assert.match(
+  alerts[0].message,
+  /^mode: shadow\nbuilder {2}opus → sonnet\n {2}r$/,
+)
+assert.match(alerts[1].message, /^mode: shadow · default tier: /)
+assert.equal(alerts[2].message, "No alerts yet.")
+selects.length = 0
+alerts.length = 0
+
 await run("advisor-decisions")
 assert.equal(selects[0].title, "Model router: last 20 decisions")
 assert.equal(selects[0].options[0].category, "Would change the model")

@@ -6,6 +6,7 @@ import { calibrationPath } from "./calibrate.ts"
 
 import { getAt, parsePath, type Path } from "./config-edit.ts"
 import type { Config } from "./config.ts"
+import { inputPrice } from "./pricing.ts"
 import type {
   AdviceRecord,
   AdvisorRecord,
@@ -114,6 +115,19 @@ const panelRow = (d: DecisionRecord): PanelRow => {
   }
 }
 
+/** A session's own decisions (its routing if a routed child, else what it dispatched) and the sessions whose advice counts for it. */
+function scope(ix: Index, session: string) {
+  const family = new Set([session])
+  for (const [child, parent] of ix.parents)
+    if (parent === session) family.add(child)
+  const own = ix.links.get(session)
+  const owned = own ? ix.decisions.get(own) : undefined
+  const mine = owned
+    ? [owned]
+    : [...ix.decisions.values()].filter((d) => d.session === session)
+  return { family, mine }
+}
+
 /**
  * The sidebar block for one session: its own routing if it is a routed child,
  * else the latest decisions it dispatched, newest first. Undefined when the
@@ -125,15 +139,8 @@ export function routerPanel(
   limit = 4,
 ): Panel | undefined {
   const ix = index(records)
-  const family = new Set([session])
-  for (const [child, parent] of ix.parents)
-    if (parent === session) family.add(child)
+  const { family, mine } = scope(ix, session)
   const advice = adviceText(adviceFor(ix, family))
-  const own = ix.links.get(session)
-  const owned = own ? ix.decisions.get(own) : undefined
-  const mine = owned
-    ? [owned]
-    : [...ix.decisions.values()].filter((d) => d.session === session)
   if (mine.length === 0 && !advice) return undefined
   const shown = mine.slice(-limit).toReversed()
   return {
@@ -142,6 +149,145 @@ export function routerPanel(
     more: mine.length - shown.length,
     ...(advice ? { advice } : {}),
   }
+}
+
+export type Tone = "good" | "changed" | "muted"
+
+export type CompactRow = {
+  /** Dim, fixed width. */
+  label: string
+  value: string
+  /** Router goes dearer (▲), cheaper (▼), the same (=) or elsewhere (≠). */
+  marker?: "▲" | "▼" | "=" | "≠"
+  /** Short why, dropped first when the line is too wide. */
+  detail?: string
+  tone?: Tone
+}
+
+export type CompactPanel = { mode: string; rows: CompactRow[] }
+
+export const COMPACT_LABEL_WIDTH = 8
+/** Usable columns in OpenCode's session sidebar (42 less its padding). */
+export const COMPACT_WIDTH = 38
+
+/** `anthropic/claude-sonnet-5-5` -> `sonnet-5-5`. */
+export const modelName = (id: string): string =>
+  id.replace(/^[\w-]+\//, "").replace(/^claude-/, "")
+
+const MARKER_TONE = {
+  "▲": "changed",
+  "▼": "good",
+  "=": "muted",
+  "≠": "changed",
+} as const
+
+function markerFor(ran: string, would: string): keyof typeof MARKER_TONE {
+  if (modelName(ran) === modelName(would)) return "="
+  const a = inputPrice(ran)
+  const w = inputPrice(would)
+  if (a === undefined || w === undefined || a === w) return "≠"
+  return w > a ? "▲" : "▼"
+}
+
+const usdShort = (usd: number): string =>
+  usd >= 10 ? `$${Math.round(usd)}` : money(usd)
+
+/** Net estimated saving of the shadow steps since local midnight, or undefined when there are none. */
+function savedToday(records: AdvisorRecord[], now: number): number | undefined {
+  const start = new Date(now).setHours(0, 0, 0, 0)
+  let net: number | undefined
+  for (const r of records)
+    if (r.kind === "saving" && Date.parse(r.t) >= start)
+      net = (net ?? 0) + r.usd
+  return net
+}
+
+/**
+ * The compact sidebar section for one session: what ran now, what the router
+ * would pick, and today's saving. A row with no data is left out. Undefined
+ * when the session has no decision.
+ */
+export function compactPanel(
+  records: AdvisorRecord[],
+  session: string,
+  now = Date.now(),
+  width = COMPACT_WIDTH,
+): CompactPanel | undefined {
+  const { mine } = scope(index(records), session)
+  const last = mine.at(-1)
+  if (!last) return undefined
+  const pad = (label: string) => label.padEnd(COMPACT_LABEL_WIDTH)
+  const nowModel = modelName(last.model)
+  const room = width - 2 - COMPACT_LABEL_WIDTH - nowModel.length - 2
+  const why = `(${sourceLabel(last).replace(":", " ")})`
+  const rows: CompactRow[] = [
+    {
+      label: pad("Now"),
+      value: nowModel,
+      ...(room >= 4
+        ? { detail: why.length > room ? `${why.slice(0, room - 1)}…` : why }
+        : {}),
+    },
+  ]
+  if (last.mode !== "enforce" || last.model !== last.would) {
+    const marker = markerFor(last.model, last.would)
+    rows.push({
+      label: pad("Would"),
+      value: modelName(last.would),
+      marker,
+      tone: MARKER_TONE[marker],
+    })
+  }
+  const net = savedToday(records, now)
+  if (net !== undefined && Math.abs(net) >= 0.005)
+    rows.push({
+      label: pad(net > 0 ? "Saved" : "Extra"),
+      value: `${usdShort(Math.abs(net))} today`,
+      tone: net > 0 ? "good" : "changed",
+    })
+  return { mode: last.mode, rows }
+}
+
+/** The whole verbose block for a session as dialog text: every decision, then advisor usage. */
+export function sessionLines(
+  records: AdvisorRecord[],
+  session: string,
+): string[] {
+  const panel = routerPanel(records, session, Infinity)
+  if (!panel) return ["Nothing routed for this session yet."]
+  return [
+    `mode: ${panel.mode}`,
+    ...panel.rows.flatMap((r) => [`${r.agent}  ${r.models}`, `  ${r.why}`]),
+    ...(panel.advice ? ["", panel.advice] : []),
+  ]
+}
+
+export function rulesLines(
+  cfg: Pick<Config, "mode" | "default" | "pins" | "rules">,
+): string[] {
+  const pins = Object.entries(cfg.pins)
+  return [
+    `mode: ${cfg.mode} · default tier: ${cfg.default}`,
+    "",
+    cfg.rules.length > 0 ? "rules:" : "rules: none",
+    ...cfg.rules.map((r) => `  ${r.id} → ${r.tier}`),
+    ...(pins.length > 0
+      ? ["", "pins:", ...pins.map(([k, tier]) => `  ${k} → ${tier}`)]
+      : []),
+  ]
+}
+
+/** The newest `limit` alerts, newest first, one per line. */
+export function alertLines(records: AdvisorRecord[], limit = 20): string[] {
+  const lines = records
+    .filter((r): r is AlertRecord => r.kind === "alert")
+    .slice(-limit)
+    .toReversed()
+    .map((a) => {
+      const toast = alertToast(a)
+      return `${clock(a.t)}  ${toast.title}: ${toast.message}`
+    })
+  return lines.length > 0 ? lines : ["No alerts yet."]
 }
 
 export type DecisionRow = {

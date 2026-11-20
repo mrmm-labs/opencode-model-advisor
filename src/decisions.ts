@@ -77,13 +77,23 @@ export type AdviceRecord = {
   refused?: boolean
 }
 
+/** One shadow step priced on the model the router chose: USD saved, negative when dearer. */
+export type SavingRecord = {
+  v: 1
+  kind: "saving"
+  t: string
+  session: string
+  usd: number
+}
+
 export type AdvisorRecord =
   | DecisionRecord
   | LinkRecord
   | AlertRecord
   | AdviceRecord
+  | SavingRecord
 
-const KINDS = new Set(["decision", "link", "alert", "advice"])
+const KINDS = new Set(["decision", "link", "alert", "advice", "saving"])
 const MAX_BYTES = 256_000
 const CHECK_EVERY = 50
 const KEEP = 2000

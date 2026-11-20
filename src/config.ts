@@ -19,6 +19,8 @@ import {
 
 export type Mode = "shadow" | "enforce"
 
+export type SidebarMode = "full" | "compact" | "off"
+
 export type MatchInput = { agent: string; prompt: string; hint: Hint }
 
 export type Rule = {
@@ -51,8 +53,8 @@ export type Config = {
     alertSteps: number
   }
   otel: { endpoint?: string; headers?: Record<string, string> }
-  /** Where the router block sits in the session sidebar. */
-  tui: { position: "top" | "bottom" }
+  /** The session sidebar block: how much it shows and where it sits. */
+  tui: { sidebar: SidebarMode; position: "top" | "bottom" }
   /** Routing v2 (docs/spec-routing-v2.md); off unless v2.enabled. */
   v2: RoutingV2Config
 }
@@ -81,7 +83,7 @@ export const defaultConfig = (): Config => ({
     alertSteps: 15,
   },
   otel: {},
-  tui: { position: "top" },
+  tui: { sidebar: "compact", position: "bottom" },
   v2: defaultRoutingV2(),
 })
 
@@ -635,6 +637,11 @@ export function buildConfig(raw: unknown): {
     const pos = raw.tui.position
     if (pos === "top" || pos === "bottom") config.tui.position = pos
     else if (pos !== undefined) warn('tui.position must be "top" or "bottom"')
+    const side = raw.tui.sidebar
+    if (side === "full" || side === "compact" || side === "off")
+      config.tui.sidebar = side
+    else if (side !== undefined)
+      warn('tui.sidebar must be "full", "compact" or "off"')
   } else if (raw.tui !== undefined) warn("tui must be an object")
 
   if (isObject(raw.v2)) buildV2(raw.v2, config.v2, warn)
