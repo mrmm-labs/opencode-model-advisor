@@ -364,6 +364,13 @@ export function createAdvisor(deps: Deps) {
         if (cost === undefined) return
         const saving = savingUsd(cost, child.model, child.would)
         if (saving === undefined || saving === 0) return
+        record({
+          v: 1,
+          kind: "saving",
+          t: stamp(),
+          session: data.sessionID,
+          usd: saving,
+        })
         const labels = {
           agent: child.agent,
           model: child.model,

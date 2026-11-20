@@ -88,19 +88,20 @@ The judge works in both modes. In shadow it still makes its call so `would` is a
 `~/.config/opencode/model-advisor.jsonc` (JSONC), or the path in `OPENCODE_MODEL_ADVISOR_CONFIG`.
 Invalid parts fall back to defaults and a warning goes to the log.
 
-| Key             | Default                        | Meaning                                                                   |
-| --------------- | ------------------------------ | ------------------------------------------------------------------------- |
-| `mode`          | `shadow`                       | `shadow` or `enforce`                                                     |
-| `provider`      | `anthropic`                    | Provider id for tiers that name a bare model id                           |
-| `tiers`         | haiku, sonnet, opus (5.5)      | Tier name to model id. Key order is the ladder, cheapest first            |
-| `default`       | `sonnet`                       | Tier when nothing else decides                                            |
-| `orchestrators` | `build`, `plan`, `coordinator` | Agents that are never routed                                              |
-| `pins`          | none                           | Agent name or `session:<id>` to tier                                      |
-| `rules`         | none                           | `{ id, when, tier }`, see above                                           |
-| `judge`         | disabled, haiku, 8000 ms       | `{ enabled, model, timeoutMs }`                                           |
-| `advisor`       | disabled, top tier, 2 uses     | `{ enabled, model, maxUses, maxContextTokens, alertSteps }`, see Advising |
-| `tui.position`  | `top`                          | Router panel placement in the session sidebar: `top` or `bottom`          |
-| `otel.endpoint` | env or off                     | OTLP/HTTP base URL; `OTEL_EXPORTER_OTLP_ENDPOINT` is the fallback         |
+| Key             | Default                        | Meaning                                                                             |
+| --------------- | ------------------------------ | ----------------------------------------------------------------------------------- |
+| `mode`          | `shadow`                       | `shadow` or `enforce`                                                               |
+| `provider`      | `anthropic`                    | Provider id for tiers that name a bare model id                                     |
+| `tiers`         | haiku, sonnet, opus (5.5)      | Tier name to model id. Key order is the ladder, cheapest first                      |
+| `default`       | `sonnet`                       | Tier when nothing else decides                                                      |
+| `orchestrators` | `build`, `plan`, `coordinator` | Agents that are never routed                                                        |
+| `pins`          | none                           | Agent name or `session:<id>` to tier                                                |
+| `rules`         | none                           | `{ id, when, tier }`, see above                                                     |
+| `judge`         | disabled, haiku, 8000 ms       | `{ enabled, model, timeoutMs }`                                                     |
+| `advisor`       | disabled, top tier, 2 uses     | `{ enabled, model, maxUses, maxContextTokens, alertSteps }`, see Advising           |
+| `tui.sidebar`   | `compact`                      | Session sidebar block: `compact` (3 rows), `full` (one entry per decision) or `off` |
+| `tui.position`  | `bottom`                       | Where the block sits in the session sidebar: `top` or `bottom`                      |
+| `otel.endpoint` | env or off                     | OTLP/HTTP base URL; `OTEL_EXPORTER_OTLP_ENDPOINT` is the fallback                   |
 
 `otel.headers` adds request headers (for an authenticated collector). The log is
 `~/.local/share/opencode/model-advisor/advisor.log` (`OPENCODE_MODEL_ADVISOR_LOG` overrides it).
@@ -254,7 +255,7 @@ calls the hooks, advising never happens, and the log gets one `advisor_hooks_idl
 after start.
 
 Observer output: a span `advisor <agent>` per request with advisor calls, the metrics below, a
-sidebar line (`advisor 2 calls $0.04`), and the decisions list. Alerts (toast, never blocking): the
+line in `/advisor` (`advisor 2 calls $0.04`), and the decisions list. Alerts (toast, never blocking): the
 advisor was refused, or an executor below the advisor tier ran a turn of more than `alertSteps`
 steps with no advisor attached (enforce mode).
 
@@ -264,9 +265,26 @@ A directory plugin that has a `tui.tsx` next to its `index.js` gets the TUI load
 (the build needs `pnpm run build` first, because the TUI imports from `dist/`). Restart the TUI to
 pick it up; the server plugin does not need a restart.
 
-- **Sidebar**: a `Model router` panel at the top of the session sidebar (`tui.position: "bottom"`
-  moves it to the end; restart the TUI after changing it). One entry per decision, newest first, at
-  most four, then a `+N more` line. Click the heading to fold it.
+- **Sidebar** (`tui.sidebar`, restart the TUI after changing it): by default a compact section of at
+  most four lines, appended to the sidebar so another plugin can still claim the top
+  (`tui.position: "top"` prepends it instead).
+
+  ```
+  Model router · shadow
+    Now     opus-5-5  (rule read-only)
+    Would   sonnet-5-5 ▼
+    Saved   $12 today
+  ```
+
+  `Now` is the model the latest dispatch ran on and why; `Would` is what the router picks, with ▲
+  (dearer), ▼ (cheaper), `=` (same) or `≠` (unpriced). `Saved` is the estimated saving of the shadow
+  steps since midnight across all sessions (`Extra` when it is a net cost). A row with no data is
+  left out; `Would` is also left out in enforce mode when the router's pick was applied.
+  A routed subagent session shows its own decision; the session that dispatched it shows its latest.
+  Click the title, or run `/advisor`, for everything else.
+
+  `"full"` is the earlier block: one entry per decision, newest first, at most four, then a `+N more`
+  line; click the heading to fold it.
 
   ```
   ▾ Model router shadow
@@ -277,9 +295,11 @@ pick it up; the server plugin does not need a restart.
   ```
 
   `sonnet → opus` (highlighted) is what ran, then what the router picks; one model means they
-  agree. A routed subagent session shows its own decision; the session that dispatched it shows its
-  latest.
+  agree. `"off"` shows no sidebar block.
 
+- **`advisor`** (`/advisor`, or a click on the sidebar title): a menu with the detail the compact
+  sidebar leaves out: _This session_ (every decision and the advisor usage), _Rules_ (rules, pins,
+  default tier), _Alerts_ (the recent ones), and every command below.
 - **`advisor: mode`** (also `/advisor-mode`): switch shadow and enforce. Going to enforce asks first.
 - **`advisor: pin`** (`/advisor-pin`): pin an agent, or the current session, to a tier; or remove a pin.
 - **`advisor: decisions`** (`/advisor-decisions`): the last 20 decisions in aligned columns (time,

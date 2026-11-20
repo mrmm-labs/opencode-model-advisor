@@ -40,14 +40,16 @@ function setup(
       records.push({ name, attrs, v }),
     dispose: async () => {},
   } as unknown as Telemetry
+  const written: AdvisorRecord[] = []
   const advisor = createAdvisor({
     config: () => config,
     telemetry,
+    record: (r) => written.push(r),
     session: async (id) => host.sessions?.[id],
     judge: host.judge ? async ({ prompt }) => host.judge!(prompt) : undefined,
   })
   const named = (name: string) => counts.filter((c) => c.name === name)
-  return { advisor, spans, counts, records, named }
+  return { advisor, spans, counts, records, named, written }
 }
 
 const dispatch = (over: object = {}) => ({
@@ -336,6 +338,9 @@ describe("shadow saving estimate", () => {
       would: "claude-sonnet-5-5",
     })
     assert.ok(Math.abs(s.by - 4) < 1e-9)
+    const [saving] = t.written.filter((r) => r.kind === "saving")
+    assert.ok(saving?.kind === "saving" && Math.abs(saving.usd - 4) < 1e-9)
+    assert.equal(saving.session, "ses_grand")
   })
 
   it("prices the tokens at list when the host reports no cost", async () => {
@@ -364,6 +369,8 @@ describe("shadow saving estimate", () => {
         t.named("model_advisor.shadow.estimated_extra_cost_usd")[0].by - 4,
       ) < 1e-9,
     )
+    const saved = t.written.find((r) => r.kind === "saving")
+    assert.ok(saved?.kind === "saving" && saved.usd < 0)
   })
 
   it("ignores sessions it did not route, steps on the right model, and enforce mode", async () => {

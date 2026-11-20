@@ -60,6 +60,8 @@
 
   // OTLP/HTTP base URL. Falls back to OTEL_EXPORTER_OTLP_ENDPOINT; off when neither is set.
   "otel": { "endpoint": "http://127.0.0.1:4318" },
-  // Router panel in the session sidebar: "top" or "bottom". Restart the TUI after changing it.
-  "tui": { "position": "top" },
+  // Session sidebar: "sidebar" is "compact" (3 rows, default), "full" (one entry per decision) or "off";
+  // "position" is "bottom" (default, appended) or "top". Restart the TUI after changing either.
+  // Click the sidebar title, or run /advisor, for decisions, rules, calibration and alerts.
+  "tui": { "sidebar": "compact", "position": "bottom" },
 }

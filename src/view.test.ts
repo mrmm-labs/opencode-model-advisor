@@ -10,19 +10,23 @@ import {
   type FactInput,
 } from "./route-v2.ts"
 import {
+  alertLines,
   AlertWatcher,
   alertToast,
   calibrationFile,
   calibrationReport,
   checkDecision,
+  compactPanel,
   decisionDetail,
   decisionRows,
   parseCalibration,
   parseHintFacts,
   parseSettingValue,
   routerPanel,
+  rulesLines,
   scoreLine,
   SECTIONS,
+  sessionLines,
   settingRows,
   shortModel,
   suggestionEdit,
@@ -117,6 +121,123 @@ describe("router panel", () => {
       ["a6", "a5", "a4", "a3"],
     )
     assert.equal(panel?.more, 2)
+  })
+})
+
+describe("compact panel", () => {
+  const noon = new Date(2023, 10, 14, 12).getTime()
+  const saving = (hoursAgo: number, usd: number): AdvisorRecord => ({
+    v: 1,
+    kind: "saving",
+    t: new Date(noon - hoursAgo * 3_600_000).toISOString(),
+    session: "child",
+    usd,
+  })
+
+  it("shows what ran, what the router would pick and today's saving", () => {
+    const panel = compactPanel(
+      [...records, saving(1, 7), saving(2, 5.4), saving(30, 99)],
+      "root",
+      noon,
+    )
+    assert.deepEqual(panel, {
+      mode: "shadow",
+      rows: [
+        {
+          label: "Now     ",
+          value: "opus-5-5",
+          detail: "(rule read-only)",
+        },
+        {
+          label: "Would   ",
+          value: "sonnet-5-5",
+          marker: "▼",
+          tone: "good",
+        },
+        { label: "Saved   ", value: "$12 today", tone: "good" },
+      ],
+    })
+  })
+
+  it("hides rows without data and leaves out sessions that routed nothing", () => {
+    const same = [Object.assign(copy("s"), { would: "claude-opus-5-5" })]
+    const rows = compactPanel(same, "root", noon)?.rows
+    assert.deepEqual(
+      rows?.map((r) => [r.label.trim(), r.marker]),
+      [
+        ["Now", undefined],
+        ["Would", "="],
+      ],
+    )
+    assert.equal(compactPanel(records, "other", noon), undefined)
+    assert.equal(
+      compactPanel([...records, saving(30, 5)], "root", noon)?.rows.length,
+      2,
+      "yesterday's saving is not today's",
+    )
+  })
+
+  it("marks a dearer pick, calls a net loss extra cost, and omits Would when enforce applied it", () => {
+    const up = Object.assign(copy("u"), {
+      model: "claude-haiku-5-5",
+      would: "claude-opus-5-5",
+    })
+    const panel = compactPanel([up, saving(1, -2.5)], "root", noon)
+    assert.equal(panel?.rows[1]?.marker, "▲")
+    assert.deepEqual(panel?.rows[2], {
+      label: "Extra   ",
+      value: "$2.50 today",
+      tone: "changed",
+    })
+    const applied = Object.assign(copy("e"), {
+      mode: "enforce" as const,
+      model: "claude-sonnet-5-5",
+    })
+    assert.deepEqual(
+      compactPanel([applied], "root", noon)?.rows.map((r) => r.label.trim()),
+      ["Now"],
+    )
+  })
+
+  it("cuts the reason to the sidebar width", () => {
+    const long = Object.assign(copy("l"), { rule: "x".repeat(60) })
+    const [now] = compactPanel([long], "root", noon)?.rows ?? []
+    assert.ok(`  ${now.label}${now.value}  ${now.detail}`.length <= 38)
+    assert.match(now.detail ?? "", /…$/)
+  })
+
+  it("moves the verbose detail to text for the dialog", () => {
+    assert.deepEqual(sessionLines(records, "child"), [
+      "mode: shadow",
+      "builder  opus → sonnet",
+      "  read-only",
+      "",
+      "advisor 2 calls $0.04",
+    ])
+    assert.deepEqual(alertLines([]), ["No alerts yet."])
+    assert.match(
+      alertLines([
+        { v: 1, kind: "alert", t: t(1), alert: "judge-failed", detail: "x" },
+      ])[0] ?? "",
+      /Judge failing: x$/,
+    )
+    assert.deepEqual(
+      rulesLines({
+        mode: "shadow",
+        default: "sonnet",
+        pins: { builder: "opus" },
+        rules: [{ id: "r1", tier: "haiku", test: () => true }],
+      }),
+      [
+        "mode: shadow · default tier: sonnet",
+        "",
+        "rules:",
+        "  r1 → haiku",
+        "",
+        "pins:",
+        "  builder → opus",
+      ],
+    )
   })
 })
 
