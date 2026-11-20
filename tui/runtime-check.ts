@@ -166,49 +166,81 @@ if (process.env.FRAMES) {
   console.log(`--- compact ---\n${compactFrame}\n--- full ---\n${fullFrame}`)
 }
 
+// One slash entry, with arguments; every other command is palette-only.
 const commands = layers[0].commands
+const slashed = commands.filter((c: any) => c.slash)
+assert.equal(slashed.length, 1)
+assert.deepEqual(slashed[0].slash, { name: "advisor", arguments: true })
 assert.deepEqual(
-  commands.map((c: any) => c.slash.name),
+  commands.filter((c: any) => !c.slash).map((c: any) => c.id),
   [
-    "advisor",
-    "advisor-mode",
-    "advisor-pin",
-    "advisor-decisions",
-    "advisor-alert",
-    "advisor-check",
-    "advisor-settings",
-    "advisor-calibration",
-  ],
+    "session",
+    "rules",
+    "alerts",
+    "decisions",
+    "calibration",
+    "mode",
+    "pin",
+    "unpin",
+    "settings",
+    "check",
+    "alert",
+    "help",
+  ].map((n) => `model-advisor.${n}`),
 )
 assert.ok(commands.every((c: any) => c.palette === true))
 
-const run = (slash: string) =>
-  commands.find((c: any) => c.slash.name === slash).run()
-
-// /advisor and a click on the section title open the same hub, with the
-// detail the sidebar leaves out.
-selectAnswers.push("session", "rules", "alerts")
-for (let i = 0; i < 3; i++) {
-  run("advisor")
-  await new Promise((r) => setTimeout(r, 40))
+// The V2 adapter does not return the command's promise: give it time to settle.
+const run = async (input = "") => {
+  slashed[0].run(input)
+  await new Promise((r) => setTimeout(r, 60))
 }
+
+// /advisor is a searchable picker of every sub-command, with usage footers; the
+// detail the sidebar leaves out is a sub-command each.
+selectAnswers.push("session")
+await run()
 assert.equal(selects[0].title, "Model router")
-assert.deepEqual(
-  selects[0].options.slice(0, 3).map((o: any) => o.value),
-  ["session", "rules", "alerts"],
+assert.equal(selects[0].options.length, 12)
+assert.equal(
+  selects[0].options.find((o: any) => o.title === "pin").footer,
+  "/advisor pin <target> <tier>",
 )
+assert.equal(typeof selects[0].search, "function")
+if (process.env.FRAMES) {
+  const o = selects[0].options as any[]
+  const w = Math.max(...o.map((x) => x.title.length))
+  let cat = ""
+  const lines = [`${selects[0].title}   (${selects[0].placeholder})`]
+  for (const x of o) {
+    if (x.category !== cat) lines.push(`  ${(cat = x.category)}`)
+    lines.push(`    ${x.title.padEnd(w)}  ${x.description}`)
+  }
+  console.log(
+    `--- picker ---\n${lines.join("\n")}\nfooter of the highlighted: ${o[0].footer}`,
+  )
+}
 assert.match(
   alerts[0].message,
   /^mode: shadow\nbuilder {2}opus → sonnet\n {2}r$/,
 )
+await run("rules")
 assert.match(alerts[1].message, /^mode: shadow · default tier: /)
+await run("alerts")
 assert.equal(alerts[2].message, "No alerts yet.")
+await run("help")
+assert.match(alerts[3].message, /\/advisor pin <target> <tier>/)
+// a prefix with one match runs it; an unknown word narrows nothing and says so
+await run("rul")
+assert.equal(alerts.length, 5)
+await run("nope")
+assert.match(toasts.at(-1).message, /No sub-command "nope"/)
 selects.length = 0
 alerts.length = 0
 
 // An alert written after start becomes a toast that says who, where, what and what
 // the router did, and names the session the host should offer to open.
-await run("advisor-alert")
+await run("alert")
 assert.match(toasts.at(-1).message, /No alert since the TUI started/)
 appendFileSync(
   process.env.OPENCODE_MODEL_ADVISOR_DECISIONS,
@@ -235,40 +267,71 @@ assert.deepEqual(toast, {
 })
 assert.equal(notified[0].title, toast.title)
 assert.deepEqual(notified[0].notification, { when: "blurred" })
-await run("advisor-alert")
+await run("alert")
 assert.deepEqual(navigations, [{ type: "session", sessionID: "s1" }])
 if (process.env.FRAMES)
   console.log(`--- toast ---\n${toast.title}\n${toast.message}`)
 
-await run("advisor-decisions")
-assert.equal(selects[0].title, "Model router: last 20 decisions")
+selectAnswers.push("d1")
+await run("decisions")
+assert.equal(selects[0].title, "Model router: decisions decision")
 assert.equal(selects[0].options[0].category, "Would change the model")
 assert.equal(selects[0].options[0].value, "d1")
+assert.match(alerts.at(-1).message, /^builder: ran opus/)
 
+// mode: typed value is validated; enforce asks first; the file keeps its comment.
+await run("mode gold")
+assert.match(toasts.at(-1).message, /Valid: shadow, enforce/)
+selectAnswers.push(undefined)
+await run("mode")
+assert.equal(selects.at(-1).current, "shadow")
 confirmed = false
-await run("advisor-mode")
+await run("mode enforce")
 assert.match(
   readFileSync(process.env.OPENCODE_MODEL_ADVISOR_CONFIG, "utf8"),
   /"shadow"/,
 )
 confirmed = true
-await run("advisor-mode")
-await new Promise((r) => setTimeout(r, 50))
+await run("mode enforce")
 const text = readFileSync(process.env.OPENCODE_MODEL_ADVISOR_CONFIG, "utf8")
 assert.match(text, /"mode": "enforce"/)
 assert.ok(text.startsWith("// keep me"))
 assert.equal(toasts.at(-1).variant, "success")
+await run("mode shadow")
 
-// The V2 adapter does not return the command's promise: give it time to settle.
-const runSettled = async (slash: string) => {
-  run(slash)
-  await new Promise((r) => setTimeout(r, 40))
-}
+// pin and unpin: the typed form, then the picker chain, then Esc.
+await run("pin builder opus")
+assert.deepEqual(
+  JSON.parse(
+    readFileSync(process.env.OPENCODE_MODEL_ADVISOR_CONFIG, "utf8").replace(
+      /^\/\/.*\n/,
+      "",
+    ),
+  ).pins,
+  { builder: "opus" },
+)
+selectAnswers.push("opus")
+await run("pin session")
+assert.match(toasts.at(-1).message, /this session pinned to opus/)
+selectAnswers.push("builder")
+await run("unpin")
+assert.equal(selects.at(-1).options[0].description, "opus")
+assert.match(toasts.at(-1).message, /builder unpinned/)
+const pinned = readFileSync(process.env.OPENCODE_MODEL_ADVISOR_CONFIG, "utf8")
+selectAnswers.push(undefined)
+await run("pin")
+assert.equal(
+  readFileSync(process.env.OPENCODE_MODEL_ADVISOR_CONFIG, "utf8"),
+  pinned,
+)
+selectAnswers.push("session")
+await run("unpin")
 
 // check: a prompt for the hint line, then the dry run in an alert.
 promptAnswers.push("[[route: task=1 risk=high files=12]]")
-await runSettled("advisor-check")
-assert.equal(prompts[0].title, "Model router: check")
+await run("check")
+assert.equal(prompts[0].title, "Model router: check input")
+assert.match(prompts[0].placeholder, /task id/)
 assert.match(alerts.at(-1).message, /dry run, nothing dispatched/)
 assert.match(alerts.at(-1).message, /connectors: not configured/)
 
@@ -280,8 +343,8 @@ const row = (title: string) => (opts: any[]) =>
 const backups = () => readdirSync(dir).filter((n) => n.includes(".bak-"))
 selectAnswers.push("policy", row("retry step"))
 promptAnswers.push("2")
-await runSettled("advisor-settings")
-assert.equal(selects.at(-3).title, "Model router: settings")
+await run("settings")
+assert.equal(selects.at(-3).title, "Model router: settings section")
 assert.equal(selects.at(-2).title, "Settings: Policy")
 let after = readFileSync(cfgPath, "utf8")
 assert.match(after, /"retryStep": 2/)
@@ -290,15 +353,15 @@ assert.equal(backups().length, 1)
 assert.equal(toasts.at(-1).variant, "success")
 assert.match(toasts.at(-1).message, /Backup/)
 
-selectAnswers.push("policy", row("retry step"))
+selectAnswers.push(row("retry step"))
 promptAnswers.push("lots")
-await runSettled("advisor-settings")
+await run("settings policy")
 assert.equal(toasts.at(-1).variant, "error")
 assert.equal(readFileSync(cfgPath, "utf8"), after)
 assert.equal(backups().length, 1)
 
 // calibration: nothing yet, then a report, an info item and an applied suggestion.
-await runSettled("advisor-calibration")
+await run("calibration")
 assert.match(toasts.at(-1).message, /No calibration yet/)
 writeFileSync(
   process.env.OPENCODE_MODEL_ADVISOR_CALIBRATION,
@@ -340,21 +403,21 @@ writeFileSync(
   }),
 )
 selectAnswers.push("report")
-await runSettled("advisor-calibration")
+await run("calibration")
 assert.match(alerts.at(-1).message, /monotonic: NO/)
 assert.match(alerts.at(-1).message, /\$?—/)
 const before = readFileSync(cfgPath, "utf8")
 selectAnswers.push("unused:fast")
-await runSettled("advisor-calibration")
+await run("calibration")
 assert.equal(alerts.at(-1).message, "never chosen")
 assert.equal(readFileSync(cfgPath, "utf8"), before)
 confirmed = false
 selectAnswers.push("cutoff:high")
-await runSettled("advisor-calibration")
+await run("calibration")
 assert.equal(readFileSync(cfgPath, "utf8"), before)
 confirmed = true
 selectAnswers.push("cutoff:high")
-await runSettled("advisor-calibration")
+await run("calibration")
 after = readFileSync(cfgPath, "utf8")
 assert.match(after, /"high": 3/)
 assert.ok(after.startsWith("// keep me"))
