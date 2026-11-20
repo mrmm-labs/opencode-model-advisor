@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/mrmm-labs/opencode-model-advisor/compare/v0.3.0...v0.4.0) (2026-11-20)
+
+
+### Features
+
+* **tui:** readable alert toasts that open the session ([#21](https://github.com/mrmm-labs/opencode-model-advisor/issues/21)) ([aa51ef1](https://github.com/mrmm-labs/opencode-model-advisor/commit/aa51ef1404ce3ec346c47a1ad3332b4f9214d451))
+
 ## [0.3.0](https://github.com/mrmm-labs/opencode-model-advisor/compare/v0.2.0...v0.3.0) (2026-11-20)
 
 
