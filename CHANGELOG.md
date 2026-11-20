@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.5.0](https://github.com/mrmm-labs/opencode-model-advisor/compare/v0.4.0...v0.5.0) (2026-11-20)
+
+
+### ⚠ BREAKING CHANGES
+
+* **tui:** /advisor-mode, -pin, -decisions, -alert, -check, -settings and -calibration are gone. Use /advisor mode <mode> (it no longer toggles), pin <target> <tier>, unpin <target>, decisions, alert, check <input...>, settings <section>, calibration <item>. The palette entries are now one per sub-command.
+
+### Features
+
+* **tui:** one /advisor command with a sub-command picker ([#23](https://github.com/mrmm-labs/opencode-model-advisor/issues/23)) ([977378e](https://github.com/mrmm-labs/opencode-model-advisor/commit/977378ee1259b11dbfa9b7d3b9efbdb34084d7fb))
+
 ## [0.4.0](https://github.com/mrmm-labs/opencode-model-advisor/compare/v0.3.0...v0.4.0) (2026-11-20)
 
 
