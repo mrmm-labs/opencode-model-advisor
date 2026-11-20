@@ -198,7 +198,7 @@ A connector needs `timeoutMs` of at most 10000 (default 3000) and a `command` or
 
 The decision record carries the facts with their sources, the score breakdown, each step the policy
 took and the connector outcomes (`v2` in `decisions.jsonl`). Paths found in the prompt are stored
-as facts; the prompt text itself never is.
+as facts; the prompt text itself never is, only a short summary of the task (below).
 
 ## Advising
 
@@ -314,11 +314,30 @@ risk, low difficulty`). `Suggested` is what the router picks, with `cheaper` or 
   agent, models), grouped into "Would change the model" and "Would keep the model" ("Applied" in
   enforce mode), with the rule, task and advisor usage under each. Select one for a toast with the
   full reason.
-- **Toasts** for alerts: a task failing twice, the judge failing. Alerts never block anything.
+- **Toasts** for alerts: a task failing twice, facts disagreeing, the judge failing, the advisor
+  refused. Alerts never block anything. A toast says who, where, what and what the router did:
+
+  ```
+  Model router · approver failed twice
+  Fix billing · acme-api
+  Approve the migration of the billing tables
+  Retrying on opus 5.5 (strongest)
+  ```
+
+  Lines: the agent; the dispatching session's title and project folder; the task (its summary);
+  what the router did, in words (`Would retry on …` in shadow mode). The raw score and matrix stay
+  in the `/advisor` detail. The toast passes its session to OpenCode, which offers to open it when
+  that session's family is not the one on screen: the subagent's session if it exists yet, else the
+  dispatching one. OpenCode's toast has no custom action, so that offer is the host's own.
+  **`advisor: open last alert`** (`/advisor-alert`) opens that session whenever you like. When the
+  terminal is not in focus, the alert is also sent to OpenCode's attention API (a system
+  notification, no sound).
 
 The TUI is a separate process from the server plugin, so the two share files only. The plugin
 appends one line per decision to `decisions.jsonl` next to `advisor.log` (rolled to `.1` past 256 KB;
-no prompt text, reasons cut to 200 characters; `OPENCODE_MODEL_ADVISOR_DECISIONS` overrides the
+no prompt text, only a one-line `summary` of the task (the task tool's description, else the first
+80 characters of the prompt, with anything that looks like a credential replaced by `[secret]`),
+reasons cut to 200 characters; `OPENCODE_MODEL_ADVISOR_DECISIONS` overrides the
 path). The TUI reads it, and changes behaviour only by editing `model-advisor.jsonc` (`mode`,
 `pins`): one top-level value is replaced, through a temp file and a rename, and every comment in the
 file stays. The plugin picks the change up on its next config re-read.

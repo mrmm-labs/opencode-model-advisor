@@ -2,6 +2,8 @@
  * What the TUI shows, as plain functions over the decisions stream: the
  * sidebar panel, the decisions list and the alert toasts. No UI types in here.
  */
+import { basename } from "node:path"
+
 import { calibrationPath } from "./calibrate.ts"
 
 import { getAt, parsePath, type Path } from "./config-edit.ts"
@@ -454,6 +456,117 @@ export function alertToast(a: AlertRecord): {
     title: titles[a.alert] ?? a.alert,
     message: [who, a.detail].filter(Boolean).join(": ") || a.alert,
     variant: a.alert === "advisor-refused" ? "error" : "warning",
+  }
+}
+
+/** The decision an alert is about: the one it names, else the dispatcher's latest of that agent before it. */
+function alertDecision(
+  a: AlertRecord,
+  records: AdvisorRecord[],
+): DecisionRecord | undefined {
+  const ix = index(records)
+  if (a.decision) return ix.decisions.get(a.decision)
+  return [...ix.decisions.values()].findLast(
+    (d) => d.session === a.session && d.agent === a.agent && d.t <= a.t,
+  )
+}
+
+/**
+ * The session an alert's toast should open: the subagent session the decision
+ * routed if it exists yet, else the dispatching session.
+ */
+export function alertTarget(
+  a: AlertRecord,
+  records: AdvisorRecord[],
+): string | undefined {
+  const id = alertDecision(a, records)?.id
+  const child = id
+    ? records.findLast((r) => r.kind === "link" && r.decision === id)
+    : undefined
+  return (child?.kind === "link" ? child.session : undefined) ?? a.session
+}
+
+export type AlertContext = {
+  /** The dispatching session, as the host knows it. */
+  session?: { title?: string; directory?: string }
+  /** Rule id -> label, for the reason. */
+  labels?: Record<string, string>
+  /** Tier and level names that are the top of their ladder. */
+  top?: string[]
+}
+
+const ALERT_TITLES: Record<string, (agent: string) => string> = {
+  "second-failure": (a) => `${a} failed twice`,
+  "fact-disagreement": (a) => `facts disagree for ${a}`,
+  "judge-failed": () => "judge failing",
+  "advisor-refused": (a) => `advisor refused ${a}`,
+  "long-turn-no-advisor": (a) => `${a} ran long without the advisor`,
+  calibration: () => "calibration has suggestions",
+}
+
+/** What the router did about it, in a sentence; the raw reason stays in the /advisor detail. */
+function alertAction(
+  a: AlertRecord,
+  d: DecisionRecord | undefined,
+  top: string[],
+): string | undefined {
+  switch (a.alert) {
+    case "second-failure": {
+      if (!d) return undefined
+      const model = prettyModel(d.would)
+      if (d.reason.includes("stop climbing"))
+        return `${d.mode === "enforce" ? "Holding" : "Would hold"} on ${model}, not climbing further`
+      const strongest = top.includes(d.tier) ? " (strongest)" : ""
+      return `${d.mode === "enforce" ? "Retrying" : "Would retry"} on ${model}${strongest}`
+    }
+    case "fact-disagreement": {
+      const m = /^(\w+): .* → (.+?)(?:;|$)/.exec(a.detail ?? "")
+      return m
+        ? `Sources disagree on ${m[1]}; the router used ${m[2]}`
+        : "Sources disagree on a fact"
+    }
+    case "judge-failed":
+      return "The judge failed; the default tier was used"
+    default:
+      return a.detail
+  }
+}
+
+/**
+ * The toast for an alert: a title naming the agent, the session and project,
+ * what the agent was doing, and what the router did. `sessionID` is where the
+ * host offers to open it.
+ */
+export function alertNotice(
+  a: AlertRecord,
+  records: AdvisorRecord[],
+  ctx: AlertContext = {},
+): {
+  title: string
+  message: string
+  variant: "warning" | "error"
+  sessionID?: string
+} {
+  const d = alertDecision(a, records)
+  const agent = a.agent ?? "a subagent"
+  const where = [
+    ctx.session?.title,
+    ctx.session?.directory && basename(ctx.session.directory),
+  ].filter(Boolean)
+  const doing = d?.summary ?? (a.task ? `task ${a.task}` : undefined)
+  const message = [
+    where.join(" · "),
+    doing && clip(doing, 80),
+    alertAction(a, d, ctx.top ?? []),
+  ]
+    .filter(Boolean)
+    .join("\n")
+  const target = alertTarget(a, records)
+  return {
+    title: `Model router · ${(ALERT_TITLES[a.alert] ?? (() => a.alert.replace(/-/g, " ")))(agent)}`,
+    message: message || a.alert,
+    variant: a.alert === "advisor-refused" ? "error" : "warning",
+    ...(target ? { sessionID: target } : {}),
   }
 }
 

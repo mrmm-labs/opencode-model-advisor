@@ -28,13 +28,18 @@ import {
   setPin,
   type Path,
 } from "../dist/config-edit.js"
-import { RecordReader } from "../dist/decisions.js"
+import {
+  RecordReader,
+  type AdvisorRecord,
+  type AlertRecord,
+} from "../dist/decisions.js"
 import { createConnectors } from "../dist/connectors.js"
 import { explain } from "../dist/explain.js"
 import { hintFacts, parseMarkers } from "../dist/hint.js"
 import { parseJsonc } from "../dist/jsonc.js"
 import {
   alertLines,
+  alertNotice,
   alertToast,
   AlertWatcher,
   calibrationFile,
@@ -71,6 +76,8 @@ type Toast = {
   title?: string
   message: string
   variant: "info" | "success" | "warning" | "error"
+  /** Where the host offers to open, when it is not already open. */
+  sessionID?: string
 }
 type Command = { id: string; title: string; slash: string; run: () => void }
 
@@ -98,6 +105,12 @@ type Host = {
     options?: { placeholder?: string; value?: string },
   ) => Promise<string | undefined>
   toast: (toast: Toast) => void
+  session: (
+    id: string,
+  ) => Promise<{ title?: string; directory?: string } | undefined>
+  open: (sessionID: string) => void
+  /** A system notification when the terminal is not in focus. */
+  attention: (title: string, message: string) => void
 }
 
 const loadConfig = () => {
@@ -110,6 +123,26 @@ const loadConfig = () => {
 
 function start(host: Host): () => void {
   const reader = new RecordReader()
+  let lastAlert: string | undefined
+
+  const announce = async (alert: AlertRecord, all: AdvisorRecord[]) => {
+    try {
+      const cfg = loadConfig()
+      const info = alert.session ? await host.session(alert.session) : undefined
+      const notice = alertNotice(alert, all, {
+        session: info,
+        labels: ruleLabels(cfg),
+        top: [cfg.ladder.at(-1), cfg.v2.levelOrder.at(-1)].filter(
+          (t): t is string => !!t,
+        ),
+      })
+      lastAlert = notice.sessionID
+      host.toast(notice)
+      host.attention(notice.title, notice.message)
+    } catch {
+      host.toast(alertToast(alert))
+    }
+  }
   const watcher = new AlertWatcher()
   const [records, setRecords] = createSignal(reader.read())
   watcher.fresh(reader.read())
@@ -120,7 +153,7 @@ function start(host: Host): () => void {
   const timer = setInterval(() => {
     const all = reader.read()
     setRecords(all)
-    for (const alert of watcher.fresh(all)) host.toast(alertToast(alert))
+    for (const alert of watcher.fresh(all)) void announce(alert, all)
   }, 2000)
 
   // Folding lasts for this TUI run; a click on the heading toggles it.
@@ -475,6 +508,19 @@ function start(host: Host): () => void {
       },
     },
     {
+      id: "model-advisor.alert",
+      title: "advisor: open last alert",
+      slash: "advisor-alert",
+      run: () =>
+        lastAlert
+          ? host.open(lastAlert)
+          : host.toast({
+              variant: "info",
+              title: "Advisor",
+              message: "No alert since the TUI started.",
+            }),
+    },
+    {
       id: "model-advisor.check",
       title: "Model router: check",
       slash: "advisor-check",
@@ -602,6 +648,24 @@ function hostV2(ctx: V2Context): Host {
         ...(options?.value ? { value: options.value } : {}),
       }),
     toast: (toast) => ctx.ui.toast.show(toast),
+    session: async (id) => {
+      const info =
+        ctx.data.session.get(id) ??
+        (await ctx.client.session.get({ sessionID: id }).catch(() => undefined))
+      return info
+        ? { title: info.title, directory: info.location?.directory }
+        : undefined
+    },
+    open: (sessionID) => ctx.ui.router.navigate({ type: "session", sessionID }),
+    attention: (title, message) =>
+      void ctx.attention
+        .notify({
+          title,
+          message,
+          notification: { when: "blurred" },
+          sound: false,
+        })
+        .catch(() => {}),
   }
 }
 
@@ -734,7 +798,22 @@ function hostV1(api: TuiPluginApi): Host {
           () => finish(undefined),
         )
       }),
-    toast: (toast) => api.ui.toast(toast),
+    toast: ({ title, message, variant }) =>
+      api.ui.toast({ title, message, variant }),
+    session: async (id) => {
+      const info = api.state.session.get(id)
+      return info ? { title: info.title, directory: info.directory } : undefined
+    },
+    open: (sessionID) => api.route.navigate("session", { sessionID }),
+    attention: (title, message) =>
+      void api.attention
+        ?.notify({
+          title,
+          message,
+          notification: { when: "blurred" },
+          sound: false,
+        })
+        .catch(() => {}),
   }
 }
 
