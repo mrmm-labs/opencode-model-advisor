@@ -33,6 +33,7 @@ import {
   type AdvisorRecord,
   type AlertRecord,
 } from "../dist/decisions.js"
+import { dispatch, SUBS, type Deps, type Ui } from "../dist/commands.js"
 import { createConnectors } from "../dist/connectors.js"
 import { explain } from "../dist/explain.js"
 import { hintFacts, parseMarkers } from "../dist/hint.js"
@@ -70,6 +71,7 @@ type Option<T> = {
   title: string
   value: T
   description?: string
+  footer?: string
   category?: string
 }
 type Toast = {
@@ -79,7 +81,13 @@ type Toast = {
   /** Where the host offers to open, when it is not already open. */
   sessionID?: string
 }
-type Command = { id: string; title: string; slash: string; run: () => void }
+type Command = {
+  id: string
+  title: string
+  /** The one slash entry; the rest are palette-only. */
+  slash?: string
+  run: (input?: string) => void
+}
 
 type Colours = {
   text: unknown
@@ -97,12 +105,20 @@ type Host = {
     render: (session: string) => JSX.Element,
   ) => void
   commands: (list: Command[]) => void
-  select: <T>(title: string, options: Option<T>[]) => Promise<T | undefined>
+  select: <T>(
+    title: string,
+    options: Option<T>[],
+    extra?: {
+      current?: T
+      placeholder?: string
+      search?: (query: string, options: readonly any[]) => readonly any[]
+    },
+  ) => Promise<T | undefined>
   confirm: (title: string, message: string) => Promise<boolean>
   alert: (title: string, message: string) => Promise<void>
   prompt: (
     title: string,
-    options?: { placeholder?: string; value?: string },
+    options?: { placeholder?: string; value?: string; description?: string },
   ) => Promise<string | undefined>
   toast: (toast: Toast) => void
   session: (
@@ -175,7 +191,7 @@ function start(host: Host): () => void {
           paddingTop={position === "bottom" ? 1 : 0}
           paddingBottom={position === "top" ? 1 : 0}
         >
-          <text fg={c().text} onMouseUp={() => void hub(session)}>
+          <text fg={c().text} onMouseUp={() => openPicker(session)}>
             <b>Model router</b>
             <span
               style={{ fg: c().muted }}
@@ -261,73 +277,8 @@ function start(host: Host): () => void {
           },
     )
 
-  const pickTier = async (title: string) => {
-    const config = loadConfig()
-    return host.select(
-      title,
-      config.ladder.map((tier) => ({
-        title: tier,
-        value: tier,
-        description: config.tiers[tier],
-      })),
-    )
-  }
-
-  const pin = async (key: string, label: string) => {
-    const tier = await pickTier(`Pin ${label} to`)
-    if (tier) report(`${label} pinned to ${tier}`, setPin(key, tier))
-  }
-
-  const pinCommand = async () => {
-    const pins = readPins()
-    const action = await host.select("Advisor pin", [
-      { title: "Pin an agent", value: "agent" },
-      { title: "Pin this session", value: "session" },
-      {
-        title: "Unpin",
-        value: "unpin",
-        description: `${Object.keys(pins).length} pinned`,
-      },
-    ])
-    if (action === "agent") {
-      const agents = new Set<string>(Object.keys(pins))
-      for (const r of reader.read())
-        if (r.kind === "decision") agents.add(r.agent)
-      const agent = await host.select(
-        "Pin which agent",
-        [...agents]
-          .filter((a) => !a.startsWith("session:"))
-          .map((a) => ({ title: a, value: a, description: pins[a] })),
-      )
-      if (agent) await pin(agent, agent)
-    } else if (action === "session") {
-      const id = host.currentSession() ?? lastSession
-      if (!id)
-        return host.toast({
-          variant: "warning",
-          title: "No session",
-          message: "Open a session first.",
-        })
-      await pin(`session:${id}`, "this session")
-    } else if (action === "unpin") {
-      const key = await host.select(
-        "Unpin",
-        Object.entries(pins).map(([k, tier]) => ({
-          title: k,
-          value: k,
-          description: tier,
-        })),
-      )
-      if (key) report(`${key} unpinned`, setPin(key, undefined))
-    }
-  }
-
   // Dry run of a hint line or task id: what the router would decide, and why.
-  const check = async () => {
-    const line = await host.prompt("Model router: check", {
-      placeholder: "[[route: task=1047 risk=high files=12]] or a task id",
-    })
-    if (!line?.trim()) return
+  const check = async (line: string) => {
     const v2 = loadConfig().v2
     const result = await checkDecision(line, v2, {
       explain,
@@ -400,15 +351,8 @@ function start(host: Host): () => void {
     save(`${row.title} set`, row.path, parsed.value)
   }
 
-  const settings = async () => {
-    const section = await host.select(
-      "Model router: settings",
-      SECTIONS.map((s) => ({
-        title: s.title,
-        value: s.id,
-        description: s.description,
-      })),
-    )
+  const settings = async (id: string) => {
+    const section = SECTIONS.find((s) => s.id === id)?.id
     if (!section) return
     const name = SECTIONS.find((s) => s.id === section)?.title ?? section
     for (;;) {
@@ -426,27 +370,25 @@ function start(host: Host): () => void {
   }
 
   // Suggestions are the operator's to apply, one at a time, through the same validated edit.
-  const calibration = async () => {
-    let text: string | undefined
+  const readCalibration = () => {
     try {
-      text = readFileSync(calibrationFile(), "utf8")
-    } catch {}
-    const c = text === undefined ? undefined : parseCalibration(text)
+      return parseCalibration(readFileSync(calibrationFile(), "utf8"))
+    } catch {
+      return undefined
+    }
+  }
+
+  const calibrate = async (pick: string) => {
+    const c = readCalibration()
     if (!c)
       return host.toast({
         variant: "info",
         title: "Calibration",
         message: "No calibration yet. Run the calibrate command first.",
       })
-    const options = suggestionOptions(c)
-    const pick = await host.select("Model router: calibration", [
-      { title: "Show report", value: "report", category: "Report" },
-      ...options,
-    ])
-    if (!pick) return
     if (pick === "report")
       return host.alert("Calibration", calibrationReport(c).join("\n"))
-    const option = options.find((o) => o.value === pick)
+    const option = suggestionOptions(c).find((o) => o.value === pick)
     const s = c.suggestions.find((x) => x.id === pick)
     if (!option || !s) return
     if (!option.applicable) return host.alert(s.path, s.why)
@@ -466,133 +408,145 @@ function start(host: Host): () => void {
       save(`${s.path} set to ${s.to}`, edit.path, edit.value)
   }
 
-  const commands: Command[] = [
-    {
-      id: "model-advisor.mode",
-      title: "advisor: mode",
-      slash: "advisor-mode",
-      run: async () => {
-        const next = loadConfig().mode === "shadow" ? "enforce" : "shadow"
-        if (
-          next === "enforce" &&
-          !(await host.confirm(
-            "Switch to enforce?",
-            "Subagents will run on the model the router picks. Run the command again to go back to shadow.",
-          ))
-        )
-          return
-        report(`Mode is now ${next}`, setMode(next))
-      },
+  const sessionId = () => host.currentSession() ?? lastSession
+  const show = (title: string, lines: string[]) =>
+    host.alert(title, lines.join("\n"))
+
+  // What the sub-commands read and do; the registry in src/commands.ts owns the rest.
+  const deps: Deps = {
+    agents: () => {
+      const pins = readPins()
+      const agents = new Set<string>(Object.keys(pins))
+      for (const r of reader.read())
+        if (r.kind === "decision") agents.add(r.agent)
+      return [...agents]
+        .filter((a) => !a.startsWith("session:"))
+        .map((a) => ({
+          title: a,
+          value: a,
+          description: pins[a] ? `pinned to ${pins[a]}` : undefined,
+        }))
     },
-    {
-      id: "model-advisor.pin",
-      title: "advisor: pin",
-      slash: "advisor-pin",
-      run: () => void pinCommand(),
+    tiers: () => {
+      const config = loadConfig()
+      return config.ladder.map((tier) => ({
+        title: tier,
+        value: tier,
+        description: config.tiers[tier],
+      }))
     },
-    {
-      id: "model-advisor.decisions",
-      title: "advisor: decisions",
-      slash: "advisor-decisions",
-      run: async () => {
-        const rows = decisionRows(reader.read(), 20)
-        if (rows.length === 0)
-          return host.toast({
+    pins: () =>
+      Object.entries(readPins()).map(([k, tier]) => ({
+        title: k,
+        value: k,
+        description: tier,
+      })),
+    decisions: () => decisionRows(reader.read(), 20),
+    calibration: () => {
+      const c = readCalibration()
+      return c
+        ? [
+            { title: "Show report", value: "report", category: "Report" },
+            ...suggestionOptions(c),
+          ]
+        : []
+    },
+    sections: () =>
+      SECTIONS.map((x) => ({
+        title: x.title,
+        value: x.id,
+        description: x.description,
+      })),
+    mode: () => loadConfig().mode,
+    show,
+    sessionLines: () => {
+      const id = sessionId()
+      return id ? sessionLines(reader.read(), id) : ["Open a session first."]
+    },
+    rulesLines: () => rulesLines(loadConfig()),
+    alertLines: () => alertLines(reader.read()),
+    decisionDetail: (id) => decisionDetail(reader.read(), id),
+    setMode: async (next) => {
+      if (next === loadConfig().mode)
+        return host.toast({
+          variant: "info",
+          title: "Advisor",
+          message: `Mode is already ${next}.`,
+        })
+      if (
+        next === "enforce" &&
+        !(await host.confirm(
+          "Switch to enforce?",
+          "Subagents will run on the model the router picks. Run /advisor mode shadow to go back.",
+        ))
+      )
+        return
+      report(`Mode is now ${next}`, setMode(next as "shadow" | "enforce"))
+    },
+    pin: (target, tier) => {
+      const id = sessionId()
+      if (target === "session" && !id)
+        return host.toast({
+          variant: "warning",
+          title: "No session",
+          message: "Open a session first.",
+        })
+      const key = target === "session" ? `session:${id}` : target
+      const label = target === "session" ? "this session" : target
+      report(`${label} pinned to ${tier}`, setPin(key, tier))
+    },
+    unpin: (target) => report(`${target} unpinned`, setPin(target, undefined)),
+    check,
+    settings,
+    calibrate,
+    openAlert: () =>
+      lastAlert
+        ? host.open(lastAlert)
+        : host.toast({
             variant: "info",
             title: "Advisor",
-            message: "No decisions yet.",
-          })
-        const id = await host.select("Model router: last 20 decisions", rows)
-        const detail = id && decisionDetail(reader.read(), id)
-        if (detail) await host.alert("Decision", detail)
-      },
-    },
-    {
-      id: "model-advisor.alert",
-      title: "advisor: open last alert",
-      slash: "advisor-alert",
-      run: () =>
-        lastAlert
-          ? host.open(lastAlert)
-          : host.toast({
-              variant: "info",
-              title: "Advisor",
-              message: "No alert since the TUI started.",
-            }),
-    },
-    {
-      id: "model-advisor.check",
-      title: "Model router: check",
-      slash: "advisor-check",
-      run: check,
-    },
-    {
-      id: "model-advisor.settings",
-      title: "Model router: settings",
-      slash: "advisor-settings",
-      run: settings,
-    },
-    {
-      id: "model-advisor.calibration",
-      title: "Model router: calibration",
-      slash: "advisor-calibration",
-      run: calibration,
-    },
-  ]
-
-  // The detail the compact sidebar leaves out. Opened by a click on its
-  // title or by /advisor; every other command is reachable from here too.
-  async function hub(session?: string) {
-    const id = session ?? host.currentSession() ?? lastSession
-    const pick = await host.select("Model router", [
-      {
-        title: "This session",
-        value: "session",
-        description: "decisions and advisor usage",
-        category: "Details",
-      },
-      {
-        title: "Rules",
-        value: "rules",
-        description: "rules, pins, default tier",
-        category: "Details",
-      },
-      {
-        title: "Alerts",
-        value: "alerts",
-        description: "recent alerts",
-        category: "Details",
-      },
-      ...commands.map((c) => ({
-        title: c.title,
-        value: c.id,
-        description: `/${c.slash}`,
-        category: "Actions",
-      })),
-    ])
-    if (!pick) return
-    const show = (title: string, lines: string[]) =>
-      host.alert(title, lines.join("\n"))
-    if (pick === "session")
-      return show(
-        "Model router: this session",
-        id ? sessionLines(reader.read(), id) : ["Open a session first."],
-      )
-    if (pick === "rules")
-      return show("Model router: rules", rulesLines(loadConfig()))
-    if (pick === "alerts")
-      return show("Model router: alerts", alertLines(reader.read()))
-    await commands.find((c) => c.id === pick)?.run()
+            message: "No alert since the TUI started.",
+          }),
   }
 
+  const ui: Ui = {
+    select: ({ title, options, ...extra }) =>
+      host.select(title, options, extra),
+    prompt: ({ title, ...options }) => host.prompt(title, options),
+    toast: ({ title, message, variant }) =>
+      host.toast({ title, message, variant }),
+  }
+
+  const go = async (input: string) => {
+    try {
+      await dispatch(input, SUBS, deps, ui)
+    } catch (err) {
+      host.toast({
+        variant: "error",
+        title: "Advisor",
+        message: err instanceof Error ? err.message : String(err),
+      })
+    }
+  }
+  function openPicker(session?: string) {
+    if (session) lastSession = session
+    void go("")
+  }
+
+  // One slash entry; the sub-commands are completed by the picker, not by the host.
+  // The palette keeps one entry per sub-command, with no slash name.
   host.commands([
     {
       id: "model-advisor.open",
       title: "Model router",
       slash: "advisor",
-      run: () => void hub(),
+      run: (input) => void go(input ?? ""),
     },
-    ...commands,
+    ...SUBS.map((c) => ({
+      id: `model-advisor.${c.name}`,
+      title: `advisor: ${c.name}`,
+      run: () => void go(c.name),
+    })),
   ])
 
   return () => clearInterval(timer)
@@ -631,19 +585,23 @@ function hostV2(ctx: V2Context): Host {
           title: c.title,
           group: "Advisor",
           palette: true as const,
-          slash: { name: c.slash },
+          ...(c.slash
+            ? { slash: { name: c.slash, arguments: true as const } }
+            : {}),
           bind: false as const,
-          run: () => void c.run(),
+          run: (input?: string) => void c.run(input),
         })),
         bindings: [],
       })),
-    select: (title, options) => ctx.ui.dialog.select({ title, options }),
+    select: (title, options, extra) =>
+      ctx.ui.dialog.select({ title, options, ...extra } as never),
     confirm: async (title, message) =>
       (await ctx.ui.dialog.confirm({ title, message })) === true,
     alert: (title, message) => ctx.ui.dialog.alert({ title, message }),
     prompt: (title, options) =>
       ctx.ui.dialog.prompt({
         title,
+        ...(options?.description ? { description: options.description } : {}),
         ...(options?.placeholder ? { placeholder: options.placeholder } : {}),
         ...(options?.value ? { value: options.value } : {}),
       }),
@@ -696,12 +654,12 @@ function hostV1(api: TuiPluginApi): Host {
           title: c.title,
           category: "Advisor",
           namespace: "palette",
-          slashName: c.slash,
+          ...(c.slash ? { slashName: c.slash } : {}),
           run: () => c.run(),
         })),
         bindings: [],
       }),
-    select: (title, options) =>
+    select: (title, options, extra) =>
       new Promise((resolve) => {
         let done = false
         const finish = (value: any) => {
@@ -714,6 +672,8 @@ function hostV1(api: TuiPluginApi): Host {
             <api.ui.DialogSelect
               title={title}
               options={options}
+              current={extra?.current}
+              placeholder={extra?.placeholder}
               onSelect={(option) => {
                 finish(option.value)
                 api.ui.dialog.clear()

@@ -305,15 +305,48 @@ risk, low difficulty`). `Suggested` is what the router picks, with `cheaper` or 
   `sonnet → opus` (highlighted) is what ran, then what the router picks; one model means they
   agree. `"off"` shows no sidebar block.
 
-- **`advisor`** (`/advisor`, or a click on the sidebar title): a menu with the detail the compact
-  sidebar leaves out: _This session_ (every decision and the advisor usage), _Rules_ (rules, pins,
-  default tier), _Alerts_ (the recent ones), and every command below.
-- **`advisor: mode`** (also `/advisor-mode`): switch shadow and enforce. Going to enforce asks first.
-- **`advisor: pin`** (`/advisor-pin`): pin an agent, or the current session, to a tier; or remove a pin.
-- **`advisor: decisions`** (`/advisor-decisions`): the last 20 decisions in aligned columns (time,
-  agent, models), grouped into "Would change the model" and "Would keep the model" ("Applied" in
-  enforce mode), with the rule, task and advisor usage under each. Select one for a toast with the
-  full reason.
+- **One command, `/advisor`.** Click the sidebar title or type `/advisor` for a searchable picker of
+  every sub-command (name, what it does, and its usage line underneath). Picking one asks for its
+  arguments in order: a picker of the live values (the current one marked) or a prompt with a
+  placeholder, prefilled where there is a default. Esc at any step cancels with nothing changed.
+  The typed form is the fast path: `/advisor pin builder opus` runs at once, `/advisor pin` asks
+  only for the missing arguments, `/advisor pi` runs the one sub-command it matches (or opens the
+  picker narrowed to the ones it could mean), and a bad value says what is valid and reopens that
+  argument's picker. OpenCode completes a slash command's name but not what follows it, so the
+  picker is the completion list.
+
+  <!-- commands:start -->
+
+  | Command                         | What it does                                                            |
+  | ------------------------------- | ----------------------------------------------------------------------- |
+  | `/advisor`                      | Open the picker                                                         |
+  | `/advisor session`              | Decisions and advisor usage of the session you are in                   |
+  | `/advisor rules`                | Rules, pins and the default tier                                        |
+  | `/advisor alerts`               | Recent alerts, newest first                                             |
+  | `/advisor decisions <decision>` | The last 20 decisions; pick one for the full reason                     |
+  | `/advisor calibration <item>`   | The calibration report, and suggestions to apply                        |
+  | `/advisor mode <mode>`          | Watching only (shadow) or choosing models (enforce); enforce asks first |
+  | `/advisor pin <target> <tier>`  | Pin an agent, or this session, to a tier                                |
+  | `/advisor unpin <target>`       | Remove a pin                                                            |
+  | `/advisor settings <section>`   | Edit routing settings, one section at a time                            |
+  | `/advisor check <input...>`     | Dry run: what the router would decide for a hint line or a task id      |
+  | `/advisor alert`                | Go to the session the latest alert was about                            |
+  | `/advisor help`                 | List every sub-command with its usage                                   |
+
+  <!-- commands:end -->
+
+  `settings` walks the rows of the section you pick, and `calibration` takes `report` or a
+  suggestion to apply. `mode enforce` asks first. Each sub-command is also in the command palette as
+  `advisor: <name>`.
+
+  Migrating from the earlier commands: `/advisor-mode` is `/advisor mode <shadow|enforce>` (it
+  used to toggle), `/advisor-pin` is `/advisor pin <target> <tier>` and `/advisor unpin <target>`,
+  `/advisor-decisions` is `/advisor decisions`, `/advisor-alert` is `/advisor alert`,
+  `/advisor-check` is `/advisor check <input...>`, `/advisor-settings` is
+  `/advisor settings <section>`, `/advisor-calibration` is `/advisor calibration <item>`. The picker's
+  old _This session_, _Rules_ and _Alerts_ entries are `/advisor session`, `rules` and `alerts`. The
+  `/advisor-*` names are gone.
+
 - **Toasts** for alerts: a task failing twice, facts disagreeing, the judge failing, the advisor
   refused. Alerts never block anything. A toast says who, where, what and what the router did:
 
@@ -326,10 +359,10 @@ risk, low difficulty`). `Suggested` is what the router picks, with `cheaper` or 
 
   Lines: the agent; the dispatching session's title and project folder; the task (its summary);
   what the router did, in words (`Would retry on …` in shadow mode). The raw score and matrix stay
-  in the `/advisor` detail. The toast passes its session to OpenCode, which offers to open it when
+  in `/advisor alerts`. The toast passes its session to OpenCode, which offers to open it when
   that session's family is not the one on screen: the subagent's session if it exists yet, else the
   dispatching one. OpenCode's toast has no custom action, so that offer is the host's own.
-  **`advisor: open last alert`** (`/advisor-alert`) opens that session whenever you like. When the
+  **`/advisor alert`** opens that session whenever you like. When the
   terminal is not in focus, the alert is also sent to OpenCode's attention API (a system
   notification, no sound).
 
