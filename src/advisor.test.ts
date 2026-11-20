@@ -373,6 +373,23 @@ describe("shadow saving estimate", () => {
     assert.ok(saved?.kind === "saving" && saved.usd < 0)
   })
 
+  it("records what enforce saved against the model the caller asked for", async () => {
+    const t = setup(
+      {
+        mode: "enforce",
+        rules: [{ id: "x", when: { agent: "builder" }, tier: "sonnet" }],
+      },
+      { sessions: SESSIONS },
+    )
+    await t.advisor.decide(dispatch())
+    t.advisor.onEvent(created("ses_grand", "builder", "claude-sonnet-5-5"))
+    t.advisor.onEvent(step("ses_grand", 3))
+    // $3 on sonnet; the caller's opus would have cost 5/3 of that.
+    const saving = t.written.find((r) => r.kind === "saving")
+    assert.ok(saving?.kind === "saving" && Math.abs(saving.usd - 2) < 1e-9)
+    assert.equal(t.counts.filter((c) => c.name.includes("shadow")).length, 0)
+  })
+
   it("ignores sessions it did not route, steps on the right model, and enforce mode", async () => {
     const t = setup(
       {},

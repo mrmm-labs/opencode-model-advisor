@@ -54,7 +54,8 @@ First match wins:
    the tier and raises an alert.
 4. **Rules.** In config order. Match on `agent`, `prompt` (regex), `prompt.length`, and the hint
    fields `hint.task`, `hint.tier`, `hint.retry`, `hint.files`. Numeric fields take `">=15"` style
-   comparisons; a list means any of.
+   comparisons; a list means any of. An optional `label` is the short sentence the sidebar shows
+   as the reason (`"label": "touches billing"`).
 5. **Judge.** Haiku reads the first 4000 characters of the prompt and answers `{tier, reason}`. Any
    failure gives the default tier with source `judge-failed`.
 6. **Default tier.**
@@ -96,7 +97,7 @@ Invalid parts fall back to defaults and a warning goes to the log.
 | `default`       | `sonnet`                       | Tier when nothing else decides                                                      |
 | `orchestrators` | `build`, `plan`, `coordinator` | Agents that are never routed                                                        |
 | `pins`          | none                           | Agent name or `session:<id>` to tier                                                |
-| `rules`         | none                           | `{ id, when, tier }`, see above                                                     |
+| `rules`         | none                           | `{ id, when, tier, label? }`, see above                                             |
 | `judge`         | disabled, haiku, 8000 ms       | `{ enabled, model, timeoutMs }`                                                     |
 | `advisor`       | disabled, top tier, 2 uses     | `{ enabled, model, maxUses, maxContextTokens, alertSteps }`, see Advising           |
 | `tui.sidebar`   | `compact`                      | Session sidebar block: `compact` (3 rows), `full` (one entry per decision) or `off` |
@@ -265,23 +266,30 @@ A directory plugin that has a `tui.tsx` next to its `index.js` gets the TUI load
 (the build needs `pnpm run build` first, because the TUI imports from `dist/`). Restart the TUI to
 pick it up; the server plugin does not need a restart.
 
-- **Sidebar** (`tui.sidebar`, restart the TUI after changing it): by default a compact section of at
-  most four lines, appended to the sidebar so another plugin can still claim the top
-  (`tui.position: "top"` prepends it instead).
+- **Sidebar** (`tui.sidebar`, restart the TUI after changing it): by default a compact section, a
+  title and at most four rows in plain words, appended to the sidebar so another plugin can still
+  claim the top (`tui.position: "top"` prepends it instead).
 
   ```
-  Model router · shadow
-    Now     opus-5-5  (rule read-only)
-    Would   sonnet-5-5 ▼
-    Saved   $12 today
+  Model router · watching only
+    Last task  builder · opus 5.5
+    Why        touches auth / security
+    Suggested  sonnet 5.5 — cheaper
+    Today      would save ≈ $1.50
   ```
 
-  `Now` is the model the latest dispatch ran on and why; `Would` is what the router picks, with ▲
-  (dearer), ▼ (cheaper), `=` (same) or `≠` (unpriced). `Saved` is the estimated saving of the shadow
-  steps since midnight across all sessions (`Extra` when it is a net cost). A row with no data is
-  left out; `Would` is also left out in enforce mode when the router's pick was applied.
-  A routed subagent session shows its own decision; the session that dispatched it shows its latest.
-  Click the title, or run `/advisor`, for everything else.
+  The title says what the router is doing: `watching only` (mode `shadow`) or `choosing models`
+  (`enforce`). `Last task` is the agent of the latest dispatch and the model it ran on. `Why` is the
+  reason: the rule's `label` if it has one, else a built-in sentence (`marked critical`, `touches
+auth / security`, `15+ files`, `security review`, `read-only agent`, `no rule matched`, `retry
+after a failure`, `judged by the advisor`), or for routing v2 the risk and difficulty (`medium
+risk, low difficulty`). `Suggested` is what the router picks, with `cheaper` or `stronger`; it is
+  left out when the pick is the model that ran. `Today` is the estimated saving since midnight
+  across all sessions: `would save` in shadow mode, `saved` in enforce mode (against the model the
+  caller asked for), `cost ... more` when it is a net loss; `≈` marks an estimate priced at list.
+  A row with no data is left out. A routed subagent session shows its own decision; the session that
+  dispatched it shows its latest. Click the title, or run `/advisor`, for everything else. The
+  slot API has no tooltips, so there is no hover text.
 
   `"full"` is the earlier block: one entry per decision, newest first, at most four, then a `+N more`
   line; click the heading to fold it.

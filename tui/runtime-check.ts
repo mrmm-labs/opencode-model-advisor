@@ -19,7 +19,7 @@ process.env.OPENCODE_MODEL_ADVISOR_DECISIONS = join(dir, "decisions.jsonl")
 process.env.OPENCODE_MODEL_ADVISOR_CALIBRATION = join(dir, "calibration.json")
 writeFileSync(
   process.env.OPENCODE_MODEL_ADVISOR_CONFIG,
-  '// keep me\n{\n  "mode": "shadow",\n  "pins": {}\n}\n',
+  '// keep me\n{\n  "mode": "shadow",\n  "rules": [{ "id": "r", "when": { "agent": "builder" }, "tier": "opus", "label": "touches auth / security" }],\n  "pins": {}\n}\n',
 )
 writeFileSync(
   process.env.OPENCODE_MODEL_ADVISOR_DECISIONS,
@@ -104,11 +104,12 @@ const draw = async (slot: any, height = 6) => {
   return frame
 }
 const compactFrame = await draw(slots[0])
-assert.match(compactFrame, /^Model router · shadow\s*$/m)
-assert.match(compactFrame, /^ {2}Now {5}opus-5-5 {2}\(rule r\)\s*$/m)
-assert.match(compactFrame, /^ {2}Would {3}sonnet-5-5 ▼\s*$/m)
-assert.match(compactFrame, /^ {2}Saved {3}\$1\.50 today\s*$/m)
-assert.equal(compactFrame.split("\n").filter((l) => l.trim()).length, 4)
+assert.match(compactFrame, /^Model router · watching only\s*$/m)
+assert.match(compactFrame, /^ {2}Last task {2}builder · opus 5\.5\s*$/m)
+assert.match(compactFrame, /^ {2}Why {8}touches auth \/ security\s*$/m)
+assert.match(compactFrame, /^ {2}Suggested {2}sonnet 5\.5 — cheaper\s*$/m)
+assert.match(compactFrame, /^ {2}Today {6}would save ≈ \$1\.50\s*$/m)
+assert.equal(compactFrame.split("\n").filter((l) => l.trim()).length, 5)
 
 // "full" keeps the old per-decision block, "off" registers nothing.
 const cfgFile = process.env.OPENCODE_MODEL_ADVISOR_CONFIG

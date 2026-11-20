@@ -20,7 +20,8 @@
   // Operator pins beat everything. Key: an agent name, or "session:<id>".
   "pins": {},
 
-  // First match wins. All conditions of a rule must hold.
+  // First match wins. All conditions of a rule must hold. "label" is optional: the short
+  // sentence the sidebar shows as the reason (stock ids have built-in ones).
   "rules": [
     {
       "id": "critical",
@@ -31,6 +32,7 @@
       "id": "risky-area",
       "when": { "prompt": "(?i)\\b(auth|security|migration|secret|crypto)\\b" },
       "tier": "opus",
+      "label": "touches auth / security",
     },
     { "id": "big", "when": { "hint.files": ">=15" }, "tier": "opus" },
     {

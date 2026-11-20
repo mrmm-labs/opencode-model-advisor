@@ -43,10 +43,12 @@ import {
   compactPanel,
   decisionDetail,
   decisionRows,
+  modeText,
   parseCalibration,
   parseHintFacts,
   parseSettingValue,
   routerPanel,
+  ruleLabels,
   rulesLines,
   SECTIONS,
   sessionLines,
@@ -127,10 +129,13 @@ function start(host: Host): () => void {
 
   const compact = (session: string) => {
     lastSession = session
-    const panel = () => compactPanel(records(), session) as CompactPanel
+    const panel = () =>
+      compactPanel(records(), session, {
+        labels: ruleLabels(loadConfig()),
+      }) as CompactPanel
     const c = () => host.colours() as Record<keyof Colours, never>
-    const tone = (t: Tone | undefined, plain: never) =>
-      t === "good" ? c().good : t === "changed" ? c().changed : plain
+    const tone = (t: Tone | undefined) =>
+      t === "good" ? c().good : t === "changed" ? c().changed : c().text
     return (
       <Show when={panel()}>
         <box
@@ -139,25 +144,15 @@ function start(host: Host): () => void {
         >
           <text fg={c().text} onMouseUp={() => void hub(session)}>
             <b>Model router</b>
-            <span style={{ fg: c().muted }}>{` \u00b7 ${panel().mode}`}</span>
+            <span
+              style={{ fg: c().muted }}
+            >{` \u00b7 ${modeText(panel().mode)}`}</span>
           </text>
           <For each={panel().rows}>
             {(row) => (
               <text fg={c().text}>
                 <span style={{ fg: c().muted }}>{`  ${row.label}`}</span>
-                <span
-                  style={{
-                    fg: row.marker ? c().text : tone(row.tone, c().text),
-                  }}
-                >
-                  {row.value}
-                </span>
-                <span style={{ fg: tone(row.tone, c().muted) }}>
-                  {row.marker ? ` ${row.marker}` : ""}
-                </span>
-                <span style={{ fg: c().muted }}>
-                  {row.detail ? `  ${row.detail}` : ""}
-                </span>
+                <span style={{ fg: tone(row.tone) }}>{row.value}</span>
               </text>
             )}
           </For>
