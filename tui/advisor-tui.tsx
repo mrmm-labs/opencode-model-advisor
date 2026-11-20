@@ -33,12 +33,20 @@ import {
   type AdvisorRecord,
   type AlertRecord,
 } from "../dist/decisions.js"
-import { dispatch, SUBS, type Deps, type Ui } from "../dist/commands.js"
+import {
+  dispatch,
+  forward,
+  slashEntries,
+  SUBS,
+  type Deps,
+  type Ui,
+} from "../dist/commands.js"
 import { createConnectors } from "../dist/connectors.js"
 import { explain } from "../dist/explain.js"
 import { hintFacts, parseMarkers } from "../dist/hint.js"
 import { parseJsonc } from "../dist/jsonc.js"
 import {
+  alertContextOf,
   alertLines,
   alertNotice,
   alertToast,
@@ -61,6 +69,7 @@ import {
   settingRows,
   suggestionEdit,
   suggestionOptions,
+  suggestionTitle,
   type CompactPanel,
   type Panel,
   type SettingRow,
@@ -84,8 +93,8 @@ type Toast = {
 type Command = {
   id: string
   title: string
-  /** The one slash entry; the rest are palette-only. */
-  slash?: string
+  description?: string
+  slash: string
   run: (input?: string) => void
 }
 
@@ -146,11 +155,8 @@ function start(host: Host): () => void {
       const cfg = loadConfig()
       const info = alert.session ? await host.session(alert.session) : undefined
       const notice = alertNotice(alert, all, {
+        ...alertContextOf(cfg),
         session: info,
-        labels: ruleLabels(cfg),
-        top: [cfg.ladder.at(-1), cfg.v2.levelOrder.at(-1)].filter(
-          (t): t is string => !!t,
-        ),
       })
       lastAlert = notice.sessionID
       host.toast(notice)
@@ -212,14 +218,15 @@ function start(host: Host): () => void {
 
   const full = (session: string) => {
     lastSession = session
-    const panel = () => routerPanel(records(), session)
+    const panel = () =>
+      routerPanel(records(), session, 4, ruleLabels(loadConfig()))
     const p = () => panel() as Panel
     const c = () => host.colours() as Record<keyof Colours, never>
     // Lists, not nested <Show>: a false <Show> inside a <box> leaves an
     // orphan text node, which opentui rejects.
     const footer = () =>
       [
-        p().more > 0 && `  +${p().more} more · /advisor-decisions`,
+        p().more > 0 && `  +${p().more} more · /advisor decisions`,
         p().advice && `  ${p().advice}`,
       ].filter((l): l is string => !!l)
     const agentWidth = () =>
@@ -236,7 +243,9 @@ function start(host: Host): () => void {
           <text fg={c().text} onMouseUp={() => setFolded(!folded())}>
             {folded() ? "\u25b8 " : "\u25be "}
             <b>Model router</b>
-            <span style={{ fg: c().muted }}> {p().mode}</span>
+            <span
+              style={{ fg: c().muted }}
+            >{` \u00b7 ${modeText(p().mode)}`}</span>
           </text>
           <For each={folded() ? [] : p().rows}>
             {(row) => (
@@ -387,7 +396,10 @@ function start(host: Host): () => void {
         message: "No calibration yet. Run the calibrate command first.",
       })
     if (pick === "report")
-      return host.alert("Calibration", calibrationReport(c).join("\n"))
+      return host.alert(
+        "Calibration",
+        calibrationReport(c, loadConfig().v2.levels).join("\n"),
+      )
     const option = suggestionOptions(c).find((o) => o.value === pick)
     const s = c.suggestions.find((x) => x.id === pick)
     if (!option || !s) return
@@ -402,7 +414,7 @@ function start(host: Host): () => void {
     if (
       await host.confirm(
         "Apply suggestion?",
-        `${s.path}: ${s.from} → ${s.to}\n${s.why}`,
+        `${suggestionTitle(s)}\n${s.why}\n(${s.path}: ${s.from} → ${s.to})`,
       )
     )
       save(`${s.path} set to ${s.to}`, edit.path, edit.value)
@@ -441,7 +453,7 @@ function start(host: Host): () => void {
         value: k,
         description: tier,
       })),
-    decisions: () => decisionRows(reader.read(), 20),
+    decisions: () => decisionRows(reader.read(), 20, ruleLabels(loadConfig())),
     calibration: () => {
       const c = readCalibration()
       return c
@@ -461,11 +473,15 @@ function start(host: Host): () => void {
     show,
     sessionLines: () => {
       const id = sessionId()
-      return id ? sessionLines(reader.read(), id) : ["Open a session first."]
+      return id
+        ? sessionLines(reader.read(), id, ruleLabels(loadConfig()))
+        : ["Open a session first."]
     },
     rulesLines: () => rulesLines(loadConfig()),
-    alertLines: () => alertLines(reader.read()),
-    decisionDetail: (id) => decisionDetail(reader.read(), id),
+    alertLines: () =>
+      alertLines(reader.read(), 20, alertContextOf(loadConfig())),
+    decisionDetail: (id) =>
+      decisionDetail(reader.read(), id, ruleLabels(loadConfig())),
     setMode: async (next) => {
       if (next === loadConfig().mode)
         return host.toast({
@@ -533,19 +549,22 @@ function start(host: Host): () => void {
     void go("")
   }
 
-  // One slash entry; the sub-commands are completed by the picker, not by the host.
-  // The palette keeps one entry per sub-command, with no slash name.
+  // The host completes only a slash command's name, so each sub-command is its
+  // own entry (and appears in the palette through it); bare /advisor is the picker.
   host.commands([
     {
       id: "model-advisor.open",
       title: "Model router",
+      description: "Pick a sub-command: /advisor help lists them all",
       slash: "advisor",
       run: (input) => void go(input ?? ""),
     },
-    ...SUBS.map((c) => ({
-      id: `model-advisor.${c.name}`,
-      title: `advisor: ${c.name}`,
-      run: () => void go(c.name),
+    ...slashEntries(SUBS).map((e) => ({
+      id: e.id,
+      title: e.title,
+      description: e.description,
+      slash: e.name,
+      run: (input?: string) => void go(forward(e.sub, input)),
     })),
   ])
 
@@ -585,9 +604,8 @@ function hostV2(ctx: V2Context): Host {
           title: c.title,
           group: "Advisor",
           palette: true as const,
-          ...(c.slash
-            ? { slash: { name: c.slash, arguments: true as const } }
-            : {}),
+          description: c.description,
+          slash: { name: c.slash, arguments: true as const },
           bind: false as const,
           run: (input?: string) => void c.run(input),
         })),
@@ -654,7 +672,7 @@ function hostV1(api: TuiPluginApi): Host {
           title: c.title,
           category: "Advisor",
           namespace: "palette",
-          ...(c.slash ? { slashName: c.slash } : {}),
+          slashName: c.slash,
           run: () => c.run(),
         })),
         bindings: [],

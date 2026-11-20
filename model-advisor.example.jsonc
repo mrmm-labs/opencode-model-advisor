@@ -66,4 +66,8 @@
   // "position" is "bottom" (default, appended) or "top". Restart the TUI after changing either.
   // Click the sidebar title, or run /advisor, for decisions, rules, calibration and alerts.
   "tui": { "sidebar": "compact", "position": "bottom" },
+
+  // The decisions file (read by the TUI) keeps a one-line, credential-filtered summary of each
+  // task, so toasts can say what the agent was doing. false writes none; toasts then say "task <id>".
+  "log": { "summary": true },
 }

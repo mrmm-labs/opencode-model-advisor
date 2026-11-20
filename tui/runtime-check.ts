@@ -154,9 +154,9 @@ const mount = (sidebar: string) => {
 }
 const fullMount = mount("full")
 const fullFrame = await draw(fullMount.claimed[0])
-assert.match(fullFrame, /Model router shadow/)
-assert.match(fullFrame, /^ {2}builder {2}opus → sonnet\s*$/m)
-assert.match(fullFrame, /^ {4}r\s*$/m)
+assert.match(fullFrame, /^▾ Model router · watching only\s*$/m)
+assert.match(fullFrame, /^ {2}builder {2}opus 5\.5 → sonnet 5\.5\s*$/m)
+assert.match(fullFrame, /^ {4}touches auth \/ security\s*$/m)
 fullMount.stopOne()
 const offMount = mount("off")
 assert.equal(offMount.claimed.length, 0)
@@ -166,29 +166,40 @@ if (process.env.FRAMES) {
   console.log(`--- compact ---\n${compactFrame}\n--- full ---\n${fullFrame}`)
 }
 
-// One slash entry, with arguments; every other command is palette-only.
+// The host completes only slash names, so bare /advisor is the picker and every
+// sub-command has its own entry, which is also what the palette lists.
 const commands = layers[0].commands
-const slashed = commands.filter((c: any) => c.slash)
-assert.equal(slashed.length, 1)
-assert.deepEqual(slashed[0].slash, { name: "advisor", arguments: true })
+const subNames = [
+  "session",
+  "rules",
+  "alerts",
+  "decisions",
+  "calibration",
+  "mode",
+  "pin",
+  "unpin",
+  "settings",
+  "check",
+  "alert",
+  "help",
+]
 assert.deepEqual(
-  commands.filter((c: any) => !c.slash).map((c: any) => c.id),
-  [
-    "session",
-    "rules",
-    "alerts",
-    "decisions",
-    "calibration",
-    "mode",
-    "pin",
-    "unpin",
-    "settings",
-    "check",
-    "alert",
-    "help",
-  ].map((n) => `model-advisor.${n}`),
+  commands.map((c: any) => c.slash.name),
+  ["advisor", ...subNames.map((n) => `advisor-${n}`)],
 )
+assert.ok(commands.every((c: any) => c.slash.arguments === true))
 assert.ok(commands.every((c: any) => c.palette === true))
+assert.deepEqual(
+  commands.slice(1).map((c: any) => c.id),
+  subNames.map((n) => `model-advisor.${n}`),
+)
+assert.match(
+  commands.find((c: any) => c.slash.name === "advisor-pin").description,
+  /\/advisor-pin <target> <tier>$/,
+)
+const slashed = [commands[0]]
+const bySlash = (name: string) =>
+  commands.find((c: any) => c.slash.name === name)
 
 // The V2 adapter does not return the command's promise: give it time to settle.
 const run = async (input = "") => {
@@ -222,10 +233,17 @@ if (process.env.FRAMES) {
 }
 assert.match(
   alerts[0].message,
-  /^mode: shadow\nbuilder {2}opus → sonnet\n {2}r$/,
+  /^The router is watching only\n\nbuilder {2}opus 5\.5 → sonnet 5\.5\n {2}touches auth \/ security\n/,
 )
 await run("rules")
-assert.match(alerts[1].message, /^mode: shadow · default tier: /)
+assert.match(
+  alerts[1].message,
+  /^The router is watching only\. With no rule or pin it uses /,
+)
+assert.match(
+  alerts[1].message,
+  /touches auth \/ security → opus 5\.5 {3}\(rule r, tier opus\)/,
+)
 await run("alerts")
 assert.equal(alerts[2].message, "No alerts yet.")
 await run("help")
@@ -277,7 +295,19 @@ await run("decisions")
 assert.equal(selects[0].title, "Model router: decisions decision")
 assert.equal(selects[0].options[0].category, "Would change the model")
 assert.equal(selects[0].options[0].value, "d1")
-assert.match(alerts.at(-1).message, /^builder: ran opus/)
+assert.match(
+  alerts.at(-1).message,
+  /^builder ran opus 5\.5; the router would pick sonnet 5\.5\nWhy: touches auth \/ security\nTask: Fix the login flow/,
+)
+assert.match(alerts.at(-1).message, /\nDetails:\nmodels: claude-opus-5-5/)
+
+// A sub-command's own slash entry runs exactly like /advisor <sub> <rest>.
+bySlash("advisor-rules").run("")
+await new Promise((r) => setTimeout(r, 60))
+assert.match(alerts.at(-1).message, /^The router is watching only\. /)
+bySlash("advisor-mode").run("gold")
+await new Promise((r) => setTimeout(r, 60))
+assert.match(toasts.at(-1).message, /Valid: shadow, enforce/)
 
 // mode: typed value is validated; enforce asks first; the file keeps its comment.
 await run("mode gold")
@@ -300,7 +330,8 @@ assert.equal(toasts.at(-1).variant, "success")
 await run("mode shadow")
 
 // pin and unpin: the typed form, then the picker chain, then Esc.
-await run("pin builder opus")
+bySlash("advisor-pin").run("builder opus")
+await new Promise((r) => setTimeout(r, 60))
 assert.deepEqual(
   JSON.parse(
     readFileSync(process.env.OPENCODE_MODEL_ADVISOR_CONFIG, "utf8").replace(
@@ -359,6 +390,14 @@ await run("settings policy")
 assert.equal(toasts.at(-1).variant, "error")
 assert.equal(readFileSync(cfgPath, "utf8"), after)
 assert.equal(backups().length, 1)
+
+// privacy: the task summary switch is a setting like any other.
+selectAnswers.push(row("task summary"), "false")
+await run("settings privacy")
+assert.equal(selects.at(-3).title, "Settings: Privacy")
+assert.match(readFileSync(cfgPath, "utf8"), /"summary": false/)
+selectAnswers.push(row("task summary"), "true")
+await run("settings privacy")
 
 // calibration: nothing yet, then a report, an info item and an applied suggestion.
 await run("calibration")
@@ -421,7 +460,7 @@ await run("calibration")
 after = readFileSync(cfgPath, "utf8")
 assert.match(after, /"high": 3/)
 assert.ok(after.startsWith("// keep me"))
-assert.equal(backups().length, 2)
+assert.equal(backups().length, 4)
 assert.ok(existsSync(cfgPath))
 
 stop()

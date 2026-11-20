@@ -317,6 +317,17 @@ describe("what the toast needs", () => {
     assert.equal(a.decision, d.id)
   })
 
+  it("writes no summary when log.summary is off", async () => {
+    const t = setup({ log: { summary: false } }, { sessions: SESSIONS })
+    await t.advisor.decide(
+      dispatch({ description: "Review the auth flow", prompt: "check auth" }),
+    )
+    const d = t.written.find((r) => r.kind === "decision")
+    assert.ok(d?.kind === "decision")
+    assert.equal(d.summary, undefined)
+    assert.ok(!JSON.stringify(d).includes("summary"))
+  })
+
   it("prefers the task description over the prompt", async () => {
     const t = setup({}, { sessions: SESSIONS })
     await t.advisor.decide(dispatch({ description: "Review the auth flow" }))

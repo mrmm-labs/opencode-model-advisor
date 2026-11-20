@@ -76,6 +76,17 @@ describe("buildConfig", () => {
     assert.equal(bad.warnings.length, 1)
   })
 
+  it("reads log.summary, on by default, and warns on a bad one", () => {
+    assert.equal(buildConfig({}).config.log.summary, true)
+    const off = buildConfig({ log: { summary: false } })
+    assert.equal(off.config.log.summary, false)
+    assert.deepEqual(off.warnings, [])
+    const bad = buildConfig({ log: { summary: "no" } })
+    assert.equal(bad.config.log.summary, true)
+    assert.equal(bad.warnings.length, 1)
+    assert.equal(buildConfig({ log: 3 }).warnings.length, 1)
+  })
+
   it("reads mode, tiers, ladder order and default", () => {
     const { config, warnings } = buildConfig({
       mode: "enforce",

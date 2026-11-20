@@ -283,6 +283,18 @@ describe("validated edit", () => {
     assert.equal(r.ok, true)
   })
 
+  it("adds log.summary to a file that has no log section", () => {
+    const f = fixture('{\n  "mode": "shadow"\n}\n')
+    const r = editValidated(["log", "summary"], false, f.path)
+    assert.equal(r.ok, true)
+    assert.equal(buildConfig(parseJsonc(f.read())).config.log.summary, false)
+    assert.equal(
+      editValidated(["log", "summary"], "maybe", f.path).ok,
+      false,
+      "refused, file left as it was",
+    )
+  })
+
   it("refuses text it cannot parse", () => {
     const f = fixture("{ nope")
     const r = editValidated(["mode"], "enforce", f.path)

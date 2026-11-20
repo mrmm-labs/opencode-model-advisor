@@ -4,10 +4,13 @@ import { describe, it } from "node:test"
 
 import {
   commandsMarkdown,
+  forward,
   dispatch,
   fuzzy,
   helpLines,
   parse,
+  slashEntries,
+  slashUsage,
   SUBS,
   usageOf,
   type Deps,
@@ -389,6 +392,60 @@ const norm = (t: string) =>
         .join("|"),
     )
     .join("\n")
+
+describe("slash entries", () => {
+  const entries = slashEntries(SUBS)
+
+  it("has one per sub-command, in registry order, with unique names", () => {
+    assert.deepEqual(
+      entries.map((e) => e.sub),
+      SUBS.map((s) => s.name),
+    )
+    assert.deepEqual(
+      entries.map((e) => e.name),
+      SUBS.map((s) => `advisor-${s.name}`),
+    )
+    assert.equal(new Set(entries.map((e) => e.name)).size, entries.length)
+    assert.equal(new Set(entries.map((e) => e.id)).size, entries.length)
+    assert.ok(entries.every((e) => e.name !== "advisor"))
+  })
+
+  it("takes its title and description, with the usage line, from the registry", () => {
+    for (const [i, s] of SUBS.entries()) {
+      assert.equal(entries[i]!.title, `advisor: ${s.name}`)
+      assert.equal(
+        entries[i]!.description,
+        `${s.description} — ${slashUsage(s)}`,
+      )
+    }
+    assert.equal(
+      entries.find((e) => e.sub === "pin")?.description,
+      "Pin an agent, or this session, to a tier — /advisor-pin <target> <tier>",
+    )
+    assert.equal(
+      slashUsage(SUBS.find((s) => s.name === "check")!),
+      "/advisor-check <input...>",
+    )
+  })
+
+  it("forwards the rest of the line, so /advisor-pin builder opus is /advisor pin builder opus", async () => {
+    assert.equal(forward("pin", "builder opus"), "pin builder opus")
+    assert.equal(forward("pin", undefined), "pin")
+    assert.equal(forward("rules", "  "), "rules")
+    const { deps, calls } = fakeDeps()
+    for (const [sub, rest] of [
+      ["pin", "builder opus"],
+      ["mode", "enforce"],
+      ["check", "1047"],
+    ] as const)
+      await dispatch(forward(sub, rest), SUBS, deps, fakeUi().ui)
+    assert.deepEqual(calls, [
+      ["pin", "builder", "opus"],
+      ["setMode", "enforce"],
+      ["check", "1047"],
+    ])
+  })
+})
 
 describe("registry", () => {
   it("has unique names and a usage line derived from the arguments", () => {
