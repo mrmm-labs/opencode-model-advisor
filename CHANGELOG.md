@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/mrmm-labs/opencode-model-advisor/compare/v0.2.0...v0.3.0) (2026-11-20)
+
+
+### Features
+
+* **tui:** plain-words compact sidebar ([#19](https://github.com/mrmm-labs/opencode-model-advisor/issues/19)) ([bf604ef](https://github.com/mrmm-labs/opencode-model-advisor/commit/bf604ef6ffb04b372095e781e93ba43cf42bd8a5))
+
 ## [0.2.0](https://github.com/mrmm-labs/opencode-model-advisor/compare/v0.1.5...v0.2.0) (2026-11-20)
 
 
