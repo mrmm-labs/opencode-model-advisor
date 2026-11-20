@@ -11,6 +11,8 @@ import {
 } from "./route-v2.ts"
 import {
   alertLines,
+  alertNotice,
+  alertTarget,
   AlertWatcher,
   alertToast,
   calibrationFile,
@@ -402,6 +404,145 @@ describe("alerts", () => {
     assert.equal(w.fresh([alert(1)], 1_000).length, 1)
     assert.equal(w.fresh([alert(1), alert(2)], 2_000).length, 0)
     assert.equal(w.fresh([alert(1), alert(2), alert(3)], 70_000).length, 1)
+  })
+
+  describe("notice", () => {
+    const decision = (over: object = {}): AdvisorRecord =>
+      ({
+        ...structuredClone(records[0]),
+        id: "d9",
+        agent: "approver",
+        session: "root",
+        model: "claude-sonnet-5-5",
+        would: "claude-opus-5-5",
+        tier: "frontier",
+        source: "v2",
+        summary: "Approve the migration of the billing tables",
+        ...over,
+      }) as AdvisorRecord
+    const failed = (over: object = {}) =>
+      ({
+        v: 1,
+        kind: "alert",
+        t: t(5),
+        alert: "second-failure",
+        agent: "approver",
+        session: "root",
+        task: "1143",
+        decision: "d9",
+        detail:
+          "risk medium, score 0 low; matrix medium×low → standard; retry 3",
+        ...over,
+      }) as never
+    const link = (session: string, d = "d9"): AdvisorRecord => ({
+      v: 1,
+      kind: "link",
+      t: t(6),
+      session,
+      parent: "root",
+      decision: d,
+    })
+    const ctx = {
+      session: { title: "Fix billing", directory: "/work/acme-api" },
+      top: ["frontier"],
+    }
+
+    it("tells the operator who, where, what and what the router did", () => {
+      const n = alertNotice(failed(), [decision({ mode: "enforce" })], ctx)
+      assert.deepEqual(n, {
+        title: "Model router · approver failed twice",
+        message: [
+          "Fix billing · acme-api",
+          "Approve the migration of the billing tables",
+          "Retrying on opus 5.5 (strongest)",
+        ].join("\n"),
+        variant: "warning",
+        sessionID: "root",
+      })
+      assert.ok(!n.message.includes("matrix"))
+    })
+
+    it("says would in shadow mode, and holds at a stop", () => {
+      assert.match(
+        alertNotice(failed(), [decision()], ctx).message,
+        /^Would retry on opus 5\.5 \(strongest\)$/m,
+      )
+      assert.match(
+        alertNotice(
+          failed(),
+          [decision({ reason: "retry 2: held at opus, stop climbing" })],
+          ctx,
+        ).message,
+        /^Would hold on opus 5\.5, not climbing further$/m,
+      )
+      assert.doesNotMatch(
+        alertNotice(failed(), [decision({ tier: "standard" })], ctx).message,
+        /strongest/,
+      )
+    })
+
+    it("cuts the task to 80 characters and falls back to the task id", () => {
+      const long = alertNotice(
+        failed(),
+        [decision({ summary: "x".repeat(200) })],
+        ctx,
+      ).message.split("\n")[1]
+      assert.equal(long?.length, 80)
+      assert.equal(alertNotice(failed(), [], {}).message, "task 1143")
+    })
+
+    it("words the other kinds", () => {
+      const disagree = alertNotice(
+        failed({
+          alert: "fact-disagreement",
+          detail: "files: hint=12 vs derived=3 → 12",
+        }),
+        [decision()],
+        ctx,
+      )
+      assert.equal(disagree.title, "Model router · facts disagree for approver")
+      assert.match(
+        disagree.message,
+        /^Sources disagree on files; the router used 12$/m,
+      )
+      const judge = alertNotice(
+        failed({
+          alert: "judge-failed",
+          agent: undefined,
+          decision: undefined,
+        }),
+        [],
+        {},
+      )
+      assert.equal(judge.title, "Model router · judge failing")
+      assert.match(judge.message, /default tier was used/)
+      assert.equal(
+        alertNotice(failed({ alert: "advisor-refused" }), [], {}).variant,
+        "error",
+      )
+      assert.equal(
+        alertNotice(failed({ alert: "odd-kind" }), [], {}).title,
+        "Model router · odd kind",
+      )
+    })
+
+    it("opens the subagent session when it exists, else the dispatcher", () => {
+      assert.equal(alertTarget(failed(), [decision()]), "root")
+      assert.equal(
+        alertTarget(failed(), [decision(), link("child-1")]),
+        "child-1",
+      )
+      assert.equal(
+        alertTarget(failed(), [decision(), link("other", "d1"), link("c2")]),
+        "c2",
+      )
+      assert.equal(alertTarget(failed({ session: undefined }), []), undefined)
+    })
+
+    it("finds the decision of an older alert that names none", () => {
+      const n = alertNotice(failed({ decision: undefined }), [decision()], ctx)
+      assert.match(n.message, /Approve the migration/)
+    })
   })
 
   it("words the toast", () => {

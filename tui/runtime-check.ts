@@ -4,6 +4,7 @@
 // decisions list dialog, and a mode switch that edits a config file.
 import assert from "node:assert/strict"
 import {
+  appendFileSync,
   existsSync,
   mkdtempSync,
   readdirSync,
@@ -38,6 +39,7 @@ writeFileSync(
       source: "rule",
       rule: "r",
       reason: "rule r",
+      summary: "Fix the login flow",
     },
     {
       v: 1,
@@ -57,6 +59,8 @@ const toasts: any[] = []
 const selects: any[] = []
 const alerts: any[] = []
 const prompts: any[] = []
+const navigations: any[] = []
+const notified: any[] = []
 // Scripted answers: a value, or a function of the dialog options; none left means cancel.
 const selectAnswers: any[] = []
 const promptAnswers: any[] = []
@@ -67,7 +71,10 @@ const ctx = {
   ui: {
     slot: (claim: any) => slots.push(claim),
     toast: { show: (t: any) => toasts.push(t) },
-    router: { current: () => ({ type: "session", sessionID: "s1" }) },
+    router: {
+      current: () => ({ type: "session", sessionID: "s1" }),
+      navigate: (d: any) => navigations.push(d),
+    },
     dialog: {
       select: async (o: any) => {
         selects.push(o)
@@ -80,6 +87,24 @@ const ctx = {
     },
   },
   keymap: { layer: (f: () => any) => layers.push(f()) },
+  data: {
+    session: {
+      get: (id: string) =>
+        id === "s1"
+          ? {
+              id,
+              title: "Fix billing",
+              location: { directory: "/work/acme-api" },
+            }
+          : undefined,
+    },
+  },
+  client: {
+    session: { get: async () => Promise.reject(new Error("unknown")) },
+  },
+  attention: {
+    notify: async (o: any) => (notified.push(o), { ok: true }),
+  },
 }
 
 const { default: plugin } = await import("./advisor-tui.tsx")
@@ -149,6 +174,7 @@ assert.deepEqual(
     "advisor-mode",
     "advisor-pin",
     "advisor-decisions",
+    "advisor-alert",
     "advisor-check",
     "advisor-settings",
     "advisor-calibration",
@@ -179,6 +205,40 @@ assert.match(alerts[1].message, /^mode: shadow · default tier: /)
 assert.equal(alerts[2].message, "No alerts yet.")
 selects.length = 0
 alerts.length = 0
+
+// An alert written after start becomes a toast that says who, where, what and what
+// the router did, and names the session the host should offer to open.
+await run("advisor-alert")
+assert.match(toasts.at(-1).message, /No alert since the TUI started/)
+appendFileSync(
+  process.env.OPENCODE_MODEL_ADVISOR_DECISIONS,
+  JSON.stringify({
+    v: 1,
+    kind: "alert",
+    t: new Date().toISOString(),
+    alert: "second-failure",
+    agent: "builder",
+    session: "s1",
+    task: "9",
+    decision: "d1",
+    detail: "risk medium, score 0 low; matrix medium×low → standard; retry 3",
+  }) + "\n",
+)
+await new Promise((r) => setTimeout(r, 2400))
+const toast = toasts.find((x) => /failed twice/.test(x.title ?? ""))
+assert.deepEqual(toast, {
+  title: "Model router · builder failed twice",
+  message:
+    "Fix billing · acme-api\nFix the login flow\nWould retry on sonnet 5.5",
+  variant: "warning",
+  sessionID: "s1",
+})
+assert.equal(notified[0].title, toast.title)
+assert.deepEqual(notified[0].notification, { when: "blurred" })
+await run("advisor-alert")
+assert.deepEqual(navigations, [{ type: "session", sessionID: "s1" }])
+if (process.env.FRAMES)
+  console.log(`--- toast ---\n${toast.title}\n${toast.message}`)
 
 await run("advisor-decisions")
 assert.equal(selects[0].title, "Model router: last 20 decisions")

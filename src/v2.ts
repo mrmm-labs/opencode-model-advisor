@@ -15,6 +15,7 @@ type Context = Parameters<V2Plugin.Plugin["setup"]>[0]
 type DispatchInput = {
   agent?: string
   prompt?: string
+  description?: string
   model?: string
   sessionID?: string
 }
@@ -41,6 +42,8 @@ export async function setup(ctx: Context) {
         callID: (event as { id?: string }).id,
         agent: input.agent,
         prompt: input.prompt,
+        description:
+          typeof input.description === "string" ? input.description : undefined,
         model: typeof input.model === "string" ? input.model : undefined,
         continuing: !!input.sessionID,
       })

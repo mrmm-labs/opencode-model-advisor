@@ -49,6 +49,7 @@ async function advisorTool(core: Core): Promise<Hooks["tool"]> {
 
 type TaskArgs = {
   subagent_type?: string
+  description?: string
   prompt?: string
   model?: string | { providerID?: string; modelID?: string }
   session_id?: string
@@ -107,6 +108,7 @@ export const server: V1Plugin = async ({ client }) => {
           callID: (input as { callID?: string }).callID,
           agent: args.subagent_type,
           prompt: args.prompt,
+          description: args.description,
           model: modelString(args.model),
           continuing: !!(args.session_id || args.task_id),
         })

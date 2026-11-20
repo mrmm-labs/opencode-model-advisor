@@ -2,8 +2,9 @@
  * The decisions stream: what the server plugin tells the TUI.
  *
  * The TUI runs in another process, so the two share a file. One JSON line per
- * routing decision, alert, child session routed and advisor request. No prompt text is
- * ever written; the reason is capped to a short string.
+ * routing decision, alert, child session routed and advisor request. The prompt is never
+ * written: only a one-line summary of the task, cut to 80 characters and filtered for
+ * credentials; the reason is capped to a short string.
  */
 import type { DecisionV2 } from "./route-v2.ts"
 import {
@@ -35,6 +36,8 @@ export type DecisionRecord = {
   rule?: string
   reason: string
   task?: string
+  /** What the dispatch is about: its description or the first words of the prompt, secrets filtered. */
+  summary?: string
   /** Routing v2 detail: facts with sources, score, level. */
   v2?: DecisionV2
 }
@@ -57,6 +60,8 @@ export type AlertRecord = {
   agent?: string
   session?: string
   task?: string
+  /** The decision the alert is about. */
+  decision?: string
   detail?: string
 }
 

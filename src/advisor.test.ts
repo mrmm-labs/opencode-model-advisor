@@ -299,6 +299,33 @@ describe("judge", () => {
   })
 })
 
+describe("what the toast needs", () => {
+  it("records a filtered summary and names the decision in the alert", async () => {
+    const t = setup({}, { sessions: SESSIONS })
+    await t.advisor.decide(
+      dispatch({
+        callID: "call1",
+        prompt:
+          "[[route: task=7 retry=2]] fix login with key sk-ant-api03-abcdefgh12345678",
+      }),
+    )
+    const d = t.written.find((r) => r.kind === "decision")
+    const a = t.written.find((r) => r.kind === "alert")
+    assert.ok(d?.kind === "decision" && a?.kind === "alert")
+    assert.equal(d.summary, "fix login with key [secret]")
+    assert.equal(a.alert, "second-failure")
+    assert.equal(a.decision, d.id)
+  })
+
+  it("prefers the task description over the prompt", async () => {
+    const t = setup({}, { sessions: SESSIONS })
+    await t.advisor.decide(dispatch({ description: "Review the auth flow" }))
+    const d = t.written.find((r) => r.kind === "decision")
+    assert.ok(d?.kind === "decision")
+    assert.equal(d.summary, "Review the auth flow")
+  })
+})
+
 const created = (id: string, agent = "builder", model = "claude-opus-5-5") => ({
   type: "session.created",
   data: {

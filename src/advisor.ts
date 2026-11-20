@@ -2,6 +2,7 @@ import { createAdvise } from "./advise.ts"
 import { bareModel, type Config } from "./config.ts"
 import { wallNow } from "./clock.ts"
 import { appendRecord, type AdvisorRecord } from "./decisions.ts"
+import { summarize } from "./summary.ts"
 import { firstSeen } from "./guard.ts"
 import { parseMarkers } from "./hint.ts"
 import { runJudge, type JudgeFn } from "./judge.ts"
@@ -35,6 +36,8 @@ export type Dispatch = {
   callID?: string
   agent?: string
   prompt: string
+  /** The task tool's short description of the dispatch, when it has one. */
+  description?: string
   /** The model the caller asked for, as "provider/model" or a bare id. */
   model?: string
   /** True when continuing an existing child session; those are never re-routed. */
@@ -224,6 +227,7 @@ export function createAdvisor(deps: Deps) {
         agent,
         session: d.sessionID,
         task: markers.hint.task,
+        decision: id,
         detail: decision.reason.slice(0, 160),
       })
     }
@@ -242,6 +246,8 @@ export function createAdvisor(deps: Deps) {
       rule: decision.rule,
       reason: decision.reason.slice(0, 200),
       task: markers.hint.task,
+      summary:
+        summarize(d.description?.trim() || markers.stripped) || undefined,
       ...(decision.v2 ? { v2: decision.v2 } : {}),
     })
     if (decision.v2?.disagreements.length) {
@@ -253,6 +259,7 @@ export function createAdvisor(deps: Deps) {
         agent,
         session: d.sessionID,
         task: markers.hint.task,
+        decision: id,
         detail: decision.v2.disagreements
           .map(
             (x) =>
