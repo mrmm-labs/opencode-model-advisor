@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/mrmm-labs/opencode-model-advisor/compare/v0.1.5...v0.2.0) (2026-11-20)
+
+
+### Features
+
+* **tui:** compact sidebar section, detail moves to an /advisor dialog ([#17](https://github.com/mrmm-labs/opencode-model-advisor/issues/17)) ([2b14446](https://github.com/mrmm-labs/opencode-model-advisor/commit/2b14446c507c1b135477727e001331ce83d7d7c9))
+
 ## [0.1.5](https://github.com/mrmm-labs/opencode-model-advisor/compare/v0.1.4...v0.1.5) (2026-11-18)
 
 
