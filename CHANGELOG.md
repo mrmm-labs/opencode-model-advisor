@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/mrmm-labs/opencode-model-advisor/compare/v0.5.0...v0.6.0) (2026-11-20)
+
+
+### Features
+
+* **tui:** per-sub-command slash entries, log.summary switch, plain-words dialogs ([#25](https://github.com/mrmm-labs/opencode-model-advisor/issues/25)) ([c68c37f](https://github.com/mrmm-labs/opencode-model-advisor/commit/c68c37f46d5188255f20305f907efbb9ad68250b))
+
 ## [0.5.0](https://github.com/mrmm-labs/opencode-model-advisor/compare/v0.4.0...v0.5.0) (2026-11-20)
 
 
