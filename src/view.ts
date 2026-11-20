@@ -72,15 +72,11 @@ function adviceFor(ix: Index, sessions: Set<string>): Total {
 
 export function adviceText(t: Total): string | undefined {
   if (t.calls > 0)
-    return `advisor ${t.calls} call${t.calls === 1 ? "" : "s"} ${money(t.cost)}`
-  if (t.refused) return "advisor refused"
-  if (t.would) return "advisor would attach"
+    return `Advisor consulted ${t.calls} time${t.calls === 1 ? "" : "s"} (${money(t.cost)})`
+  if (t.refused) return "Advisor was refused"
+  if (t.would) return "Advisor would have been attached"
   return undefined
 }
-
-/** `claude-sonnet-5-5` -> `sonnet`; anything else is kept as is. */
-export const shortModel = (id: string): string =>
-  id.replace(/^[\w-]+\//, "").replace(/^claude-([a-z]+)-[\d-]+$/, "$1")
 
 const fit = (s: string, n: number) =>
   s.length > n ? `${s.slice(0, n - 1)}…` : s.padEnd(n)
@@ -101,19 +97,17 @@ export type Panel = {
   advice?: string
 }
 
-const panelRow = (d: DecisionRecord): PanelRow => {
-  const ran = shortModel(d.model)
-  const would = shortModel(d.would)
+const panelRow = (
+  d: DecisionRecord,
+  labels?: Record<string, string>,
+): PanelRow => {
+  const ran = prettyModel(d.model)
+  const would = prettyModel(d.would)
   return {
     agent: d.agent,
     models: ran === would ? ran : `${ran} → ${would}`,
-    why: [
-      sourceLabel(d).replace(/^rule:/, ""),
-      d.v2 && `${d.v2.level} ${d.v2.score.difficulty}`,
-    ]
-      .filter(Boolean)
-      .join(" · "),
-    changed: ran !== would,
+    why: whyText(d, labels),
+    changed: modelName(d.model) !== modelName(d.would),
   }
 }
 
@@ -139,6 +133,7 @@ export function routerPanel(
   records: AdvisorRecord[],
   session: string,
   limit = 4,
+  labels?: Record<string, string>,
 ): Panel | undefined {
   const ix = index(records)
   const { family, mine } = scope(ix, session)
@@ -147,7 +142,7 @@ export function routerPanel(
   const shown = mine.slice(-limit).toReversed()
   return {
     mode: mine.at(-1)?.mode ?? "shadow",
-    rows: shown.map(panelRow),
+    rows: shown.map((d) => panelRow(d, labels)),
     more: mine.length - shown.length,
     ...(advice ? { advice } : {}),
   }
@@ -261,6 +256,14 @@ const clip = (s: string, n: number) =>
 const usdShort = (usd: number): string =>
   usd >= 10 ? `$${Math.round(usd)}` : money(usd)
 
+/** "would save ≈ $12" in shadow mode, "saved ≈ $12" in enforce mode; a net loss says what it would cost. */
+export function todayText(net: number, shadow: boolean): string {
+  const sum = usdShort(Math.abs(net))
+  return net > 0
+    ? `${shadow ? "would save" : "saved"} ≈ ${sum}`
+    : `${shadow ? "would cost" : "cost"} ≈ ${sum} more`
+}
+
 /** Net estimated saving of the steps since local midnight, or undefined when there are none. */
 function savedToday(records: AdvisorRecord[], now: number): number | undefined {
   const start = new Date(now).setHours(0, 0, 0, 0)
@@ -307,62 +310,106 @@ export function compactPanel(
     })
   }
   const net = savedToday(records, now)
-  if (net !== undefined && Math.abs(net) >= 0.005) {
-    const shadow = last.mode !== "enforce"
-    const sum = usdShort(Math.abs(net))
+  if (net !== undefined && Math.abs(net) >= 0.005)
     rows.push({
       label: pad("Today"),
-      value: clip(
-        net > 0
-          ? `${shadow ? "would save" : "saved"} ≈ ${sum}`
-          : `${shadow ? "would cost" : "cost"} ≈ ${sum} more`,
-        room,
-      ),
+      value: clip(todayText(net, last.mode !== "enforce"), room),
       tone: net > 0 ? "good" : "changed",
     })
-  }
   return { mode: last.mode, rows }
 }
 
-/** The whole verbose block for a session as dialog text: every decision, then advisor usage. */
+/**
+ * The whole verbose block for a session as dialog text, in the compact view's
+ * words: every decision, today's saving, then advisor usage.
+ */
 export function sessionLines(
   records: AdvisorRecord[],
   session: string,
+  labels?: Record<string, string>,
+  now = Date.now(),
 ): string[] {
-  const panel = routerPanel(records, session, Infinity)
+  const panel = routerPanel(records, session, Infinity, labels)
   if (!panel) return ["Nothing routed for this session yet."]
+  const net = savedToday(records, now)
   return [
-    `mode: ${panel.mode}`,
+    `The router is ${modeText(panel.mode)}`,
+    "",
     ...panel.rows.flatMap((r) => [`${r.agent}  ${r.models}`, `  ${r.why}`]),
+    ...(net !== undefined && Math.abs(net) >= 0.005
+      ? ["", `Today: ${todayText(net, panel.mode !== "enforce")}`]
+      : []),
     ...(panel.advice ? ["", panel.advice] : []),
+    "",
+    "Ids and the full reason of each decision: /advisor decisions",
   ]
 }
 
+/** A rule as a sentence: its label, else the built-in one, else its id in words. */
+export const ruleSentence = (
+  id: string,
+  labels: Record<string, string> = {},
+): string => labels[id] ?? RULE_WORDS[id] ?? id.replace(/[-_]+/g, " ")
+
 export function rulesLines(
-  cfg: Pick<Config, "mode" | "default" | "pins" | "rules">,
+  cfg: Pick<Config, "mode" | "default" | "pins" | "rules" | "tiers">,
 ): string[] {
   const pins = Object.entries(cfg.pins)
+  const model = (tier: string) =>
+    cfg.tiers[tier] ? prettyModel(cfg.tiers[tier]) : tier
+  const labels = ruleLabels(cfg)
   return [
-    `mode: ${cfg.mode} · default tier: ${cfg.default}`,
+    `The router is ${modeText(cfg.mode)}. With no rule or pin it uses ${model(cfg.default)}.`,
     "",
-    cfg.rules.length > 0 ? "rules:" : "rules: none",
-    ...cfg.rules.map((r) => `  ${r.id} → ${r.tier}`),
+    cfg.rules.length > 0 ? "Rules:" : "No rules.",
+    ...cfg.rules.map(
+      (r) =>
+        `  ${ruleSentence(r.id, labels)} → ${model(r.tier)}   (rule ${r.id}, tier ${r.tier})`,
+    ),
     ...(pins.length > 0
-      ? ["", "pins:", ...pins.map(([k, tier]) => `  ${k} → ${tier}`)]
+      ? [
+          "",
+          "Pins:",
+          ...pins.map(
+            ([k, tier]) => `  ${k} → ${model(tier)}   (tier ${tier})`,
+          ),
+        ]
       : []),
   ]
 }
 
-/** The newest `limit` alerts, newest first, one per line. */
-export function alertLines(records: AdvisorRecord[], limit = 20): string[] {
-  const lines = records
+/** What the alert toasts need from the config. */
+export const alertContextOf = (
+  cfg: Pick<Config, "log" | "ladder" | "v2" | "rules">,
+): AlertContext => ({
+  summary: cfg.log.summary,
+  labels: ruleLabels(cfg),
+  top: [cfg.ladder.at(-1), cfg.v2.levelOrder.at(-1)].filter(
+    (t): t is string => !!t,
+  ),
+})
+
+/**
+ * The newest `limit` alerts, newest first, each as its time and title, what
+ * the agent was doing and what the router did, then a `details` line with the
+ * raw reason.
+ */
+export function alertLines(
+  records: AdvisorRecord[],
+  limit = 20,
+  ctx: AlertContext = {},
+): string[] {
+  const lines: string[] = []
+  const recent = records
     .filter((r): r is AlertRecord => r.kind === "alert")
     .slice(-limit)
     .toReversed()
-    .map((a) => {
-      const toast = alertToast(a)
-      return `${clock(a.t)}  ${toast.title}: ${toast.message}`
-    })
+  for (const a of recent) {
+    const n = alertNotice(a, records, ctx)
+    lines.push(`${clock(a.t)}  ${n.title.replace(/^Model router · /, "")}`)
+    for (const l of n.message.split("\n")) lines.push(`       ${l}`)
+    if (a.detail) lines.push(`       details: ${a.detail}`)
+  }
   return lines.length > 0 ? lines : ["No alerts yet."]
 }
 
@@ -382,12 +429,13 @@ const clock = (iso: string): string => {
 
 /**
  * The newest `limit` decisions, newest first, as fixed columns
- * (`19:05  general         sonnet → opus`) with the reason as description,
+ * (`19:05  general  sonnet 5.5 → opus 5.5`) with the reason in words as description,
  * grouped into those the router would change and those it would keep.
  */
 export function decisionRows(
   records: AdvisorRecord[],
   limit = 20,
+  labels?: Record<string, string>,
 ): DecisionRow[] {
   const ix = index(records)
   const childOf = new Map<string, string>()
@@ -395,14 +443,14 @@ export function decisionRows(
   const recent = [...ix.decisions.values()].slice(-limit).toReversed()
   const width = Math.min(16, Math.max(5, ...recent.map((d) => d.agent.length)))
   const rows = recent.map((d) => {
-    const row = panelRow(d)
+    const row = panelRow(d, labels)
     const child = childOf.get(d.id)
     const advice = child
       ? adviceText(adviceFor(ix, new Set([child])))
       : undefined
     return {
       title: `${clock(d.t)}  ${fit(d.agent, width)}  ${row.models}`,
-      description: [row.why, d.task && `task ${d.task}`, advice]
+      description: [row.why, d.task && `task ${d.task}`, d.summary, advice]
         .filter(Boolean)
         .join(" · "),
       category:
@@ -422,22 +470,35 @@ export function decisionRows(
   )
 }
 
-/** Everything known about one decision, one fact per line, for a detail toast. */
+/**
+ * One decision in words (what ran, what the router picks, why, the task), then
+ * a `Details` block with the raw ids, reason and v2 breakdown for debugging.
+ */
 export function decisionDetail(
   records: AdvisorRecord[],
   id: string,
+  labels?: Record<string, string>,
 ): string | undefined {
   const d = index(records).decisions.get(id)
   if (!d) return undefined
+  const ran = prettyModel(d.model)
+  const would = prettyModel(d.would)
+  const same = modelName(d.model) === modelName(d.would)
   return [
-    `${d.agent}: ran ${shortModel(d.model)}, router ${d.mode === "enforce" ? "applied" : "would pick"} ${shortModel(d.would)}`,
+    d.mode === "enforce"
+      ? `${d.agent} ran ${ran}${same ? "" : `; the router picked ${would}`}`
+      : `${d.agent} ran ${ran}; the router ${same ? "agrees" : `would pick ${would}`}`,
+    `Why: ${whyText(d, labels)}`,
+    ...(d.task || d.summary
+      ? [`Task: ${[d.task, d.summary].filter(Boolean).join(" — ")}`]
+      : []),
+    `When: ${new Date(d.t).toLocaleString()}`,
+    "",
+    "Details:",
+    `models: ${d.model} (ran), ${d.would} (router)`,
     `why: ${sourceLabel(d)}: ${d.reason}`,
-    d.task ? `task: ${d.task}` : undefined,
-    `at: ${new Date(d.t).toLocaleString()}`,
     ...(d.v2 ? ["", ...v2Lines(d.v2)] : []),
-  ]
-    .filter((l) => l !== undefined)
-    .join("\n")
+  ].join("\n")
 }
 
 export function alertToast(a: AlertRecord): {
@@ -487,6 +548,8 @@ export function alertTarget(
 }
 
 export type AlertContext = {
+  /** False when the config turned task summaries off: records that still carry one are not shown. */
+  summary?: boolean
   /** The dispatching session, as the host knows it. */
   session?: { title?: string; directory?: string }
   /** Rule id -> label, for the reason. */
@@ -553,7 +616,9 @@ export function alertNotice(
     ctx.session?.title,
     ctx.session?.directory && basename(ctx.session.directory),
   ].filter(Boolean)
-  const doing = d?.summary ?? (a.task ? `task ${a.task}` : undefined)
+  const doing =
+    (ctx.summary === false ? undefined : d?.summary) ??
+    (a.task ? `task ${a.task}` : undefined)
   const message = [
     where.join(" · "),
     doing && clip(doing, 80),
@@ -853,6 +918,11 @@ export const SECTIONS = [
     description: "when a bucket raises a suggestion",
   },
   { id: "mode", title: "Mode", description: "shadow or enforce, v2 on or off" },
+  {
+    id: "privacy",
+    title: "Privacy",
+    description: "task summary in the decisions file",
+  },
 ] as const
 export type SectionId = (typeof SECTIONS)[number]["id"]
 
@@ -867,7 +937,7 @@ const DIFFICULTIES = ["low", "medium", "high"] as const
 /** The editable values of one config section, one row each. */
 export function settingRows(
   section: SectionId,
-  cfg: Pick<Config, "mode" | "v2">,
+  cfg: Pick<Config, "mode" | "v2" | "log">,
 ): SettingRow[] {
   const v2 = cfg.v2
   const row = (
@@ -999,6 +1069,13 @@ export function settingRows(
         ),
       )
       break
+    case "privacy":
+      rows.push(
+        row("task summary", ["log", "summary"], "boolean", {
+          choices: ["true", "false"],
+        }),
+      )
+      break
     case "mode":
       rows.push(
         row("mode", ["mode"], "string", { choices: ["shadow", "enforce"] }),
@@ -1109,7 +1186,12 @@ export function parseCalibration(text: string): CalibrationView | undefined {
 const cost = (v: number | null | undefined): string =>
   typeof v === "number" ? money(v) : "—"
 
-export function calibrationReport(c: CalibrationView): string[] {
+export function calibrationReport(
+  c: CalibrationView,
+  levels: Record<string, { model: string }> = {},
+): string[] {
+  const level = (l: string) =>
+    levels[l] ? `${l} (${prettyModel(levels[l].model)})` : l
   const days = Object.entries(c.backtest.byDifficulty)
   return [
     `calibrated ${c.t ? new Date(c.t).toLocaleString() : "?"} · last ${c.window_days} days · ${c.tasks} tasks`,
@@ -1118,7 +1200,7 @@ export function calibrationReport(c: CalibrationView): string[] {
       ? [
           "",
           ...table([
-            ["difficulty", "tasks", "retries", "cost/task"],
+            ["difficulty", "tasks", "retries", "cost per task"],
             ...days.map(([d, s]) => [
               d,
               String(s.tasks),
@@ -1136,14 +1218,14 @@ export function calibrationReport(c: CalibrationView): string[] {
             "difficulty",
             "level",
             "tasks",
-            "first-pass",
+            "first try ok",
             "retries",
-            "cost/task",
+            "cost per task",
           ],
           ...c.buckets.map((b) => [
             b.risk,
             b.difficulty,
-            b.level,
+            level(b.level),
             String(b.tasks),
             `${Math.round(b.firstPass * 100)}%`,
             String(b.avgRetries),
@@ -1167,10 +1249,23 @@ export type SuggestionOption = {
   applicable: boolean
 }
 
+/** A suggestion as a sentence; the config path stays in the description. */
+export function suggestionTitle(s: Suggestion): string {
+  const matrix = /^v2\.policy\.matrix\.(\w+)\.(\w+)$/.exec(s.path)
+  if (s.kind === "matrix" && matrix)
+    return `For ${matrix[1]} risk, ${matrix[2]} difficulty: use ${s.to} instead of ${s.from}`
+  const cutoff = /^v2\.difficulty\.cutoffs\.(\w+)$/.exec(s.path)
+  if (s.kind === "cutoff" && cutoff)
+    return `Call a task ${cutoff[1]} difficulty from score ${s.to} (now ${s.from})`
+  const level = /^v2\.levels\.(\w+)$/.exec(s.path)
+  if (s.kind === "info" && level) return `Level ${level[1]} is never chosen`
+  return s.kind === "info" ? s.path : `${s.path}: ${s.from} → ${s.to}`
+}
+
 export const suggestionOptions = (c: CalibrationView): SuggestionOption[] =>
   c.suggestions.map((s) => ({
-    title: s.kind === "info" ? `${s.path}` : `${s.path}: ${s.from} → ${s.to}`,
-    description: s.why,
+    title: suggestionTitle(s),
+    description: `${s.why} · ${s.path}`,
     category: s.kind === "info" ? "For information" : "Apply",
     value: s.id,
     applicable: s.kind !== "info",

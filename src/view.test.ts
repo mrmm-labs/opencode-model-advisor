@@ -10,6 +10,7 @@ import {
   type FactInput,
 } from "./route-v2.ts"
 import {
+  alertContextOf,
   alertLines,
   alertNotice,
   alertTarget,
@@ -33,9 +34,9 @@ import {
   SECTIONS,
   sessionLines,
   settingRows,
-  shortModel,
   suggestionEdit,
   suggestionOptions,
+  suggestionTitle,
   v2Lines,
   whyText,
 } from "./view.ts"
@@ -85,8 +86,8 @@ const copy = (id: string): AdvisorRecord =>
 
 const row = {
   agent: "builder",
-  models: "opus → sonnet",
-  why: "read-only",
+  models: "opus 5.5 → sonnet 5.5",
+  why: "read-only agent",
   changed: true,
 }
 
@@ -96,22 +97,22 @@ describe("router panel", () => {
       mode: "shadow",
       rows: [row],
       more: 0,
-      advice: "advisor 2 calls $0.04",
+      advice: "Advisor consulted 2 times ($0.04)",
     })
   })
 
   it("shows the dispatching session its decisions and its children's advisor usage", () => {
     const panel = routerPanel(records, "root")
     assert.deepEqual(panel?.rows, [row])
-    assert.equal(panel?.advice, "advisor 2 calls $0.04")
+    assert.equal(panel?.advice, "Advisor consulted 2 times ($0.04)")
   })
 
   it("marks an unchanged model and is empty for an unrelated session", () => {
     const same = [Object.assign(copy("s"), { would: "claude-opus-5-5" })]
     assert.deepEqual(routerPanel(same, "root")?.rows[0], {
       agent: "builder",
-      models: "opus",
-      why: "read-only",
+      models: "opus 5.5",
+      why: "read-only agent",
       changed: false,
     })
     assert.equal(routerPanel(records, "other"), undefined)
@@ -303,43 +304,249 @@ describe("compact panel", () => {
 
   it("moves the verbose detail to text for the dialog", () => {
     assert.deepEqual(sessionLines(records, "child"), [
-      "mode: shadow",
-      "builder  opus → sonnet",
-      "  read-only",
+      "The router is watching only",
       "",
-      "advisor 2 calls $0.04",
+      "builder  opus 5.5 → sonnet 5.5",
+      "  read-only agent",
+      "",
+      "Advisor consulted 2 times ($0.04)",
+      "",
+      "Ids and the full reason of each decision: /advisor decisions",
     ])
     assert.deepEqual(alertLines([]), ["No alerts yet."])
-    assert.match(
+    assert.deepEqual(
       alertLines([
         { v: 1, kind: "alert", t: t(1), alert: "judge-failed", detail: "x" },
-      ])[0] ?? "",
-      /Judge failing: x$/,
+      ]).map((l) => l.replace(/^\d\d:\d\d/, "hh:mm")),
+      [
+        "hh:mm  judge failing",
+        "       The judge failed; the default tier was used",
+        "       details: x",
+      ],
     )
     assert.deepEqual(
       rulesLines({
         mode: "shadow",
         default: "sonnet",
         pins: { builder: "opus" },
-        rules: [{ id: "r1", tier: "haiku", test: () => true }],
+        tiers: {
+          haiku: "claude-haiku-5-5",
+          sonnet: "claude-sonnet-5-5",
+          opus: "claude-opus-5-5",
+        },
+        rules: [
+          { id: "r1", tier: "haiku", test: () => true },
+          { id: "risky-area", tier: "opus", test: () => true },
+          {
+            id: "billing",
+            tier: "opus",
+            label: "touches billing",
+            test: () => true,
+          },
+        ],
       }),
       [
-        "mode: shadow · default tier: sonnet",
+        "The router is watching only. With no rule or pin it uses sonnet 5.5.",
         "",
-        "rules:",
-        "  r1 → haiku",
+        "Rules:",
+        "  r1 → haiku 5.5   (rule r1, tier haiku)",
+        "  touches auth / security → opus 5.5   (rule risky-area, tier opus)",
+        "  touches billing → opus 5.5   (rule billing, tier opus)",
         "",
-        "pins:",
-        "  builder → opus",
+        "Pins:",
+        "  builder → opus 5.5   (tier opus)",
       ],
     )
   })
 })
 
-describe("short model", () => {
-  it("keeps the family and drops provider and version", () => {
-    assert.equal(shortModel("anthropic/claude-sonnet-5-5"), "sonnet")
-    assert.equal(shortModel("gpt-5"), "gpt-5")
+const strip = (l: string) => l.replace(/^\d\d:\d\d/, "hh:mm")
+
+describe("humane dialogs", () => {
+  const noon = new Date(2023, 10, 14, 12).getTime()
+  const sav = (usd: number): AdvisorRecord => ({
+    v: 1,
+    kind: "saving",
+    t: new Date(noon - 3_600_000).toISOString(),
+    session: "child",
+    usd,
+  })
+
+  it("puts the session's mode in words and says what today saves", () => {
+    const lines = sessionLines([...records, sav(1.5)], "root", {}, noon)
+    assert.equal(lines[0], "The router is watching only")
+    assert.ok(lines.includes("Today: would save ≈ $1.50"))
+    const enforce = [
+      { ...(records[0] as object), mode: "enforce" } as AdvisorRecord,
+      sav(1.5),
+    ]
+    const applied = sessionLines(enforce, "root", {}, noon)
+    assert.equal(applied[0], "The router is choosing models")
+    assert.ok(applied.includes("Today: saved ≈ $1.50"))
+  })
+
+  it("uses the config's label in the session, decisions and detail", () => {
+    const labels = { "read-only": "never writes" }
+    assert.ok(sessionLines(records, "root", labels).includes("  never writes"))
+    assert.match(
+      decisionRows(records, 20, labels)[0]!.description,
+      /^never writes/,
+    )
+    assert.match(decisionDetail(records, "d1", labels)!, /^Why: never writes$/m)
+  })
+
+  it("adds the task summary to the row and the detail, and agrees when nothing would change", () => {
+    const rec = [
+      {
+        ...(records[0] as object),
+        would: "claude-opus-5-5",
+        task: "7",
+        summary: "Fix login",
+      } as AdvisorRecord,
+    ]
+    assert.match(decisionRows(rec)[0]!.description, /task 7 · Fix login$/)
+    const detail = decisionDetail(rec, "d1")!
+    assert.match(detail, /^builder ran opus 5\.5; the router agrees$/m)
+    assert.match(detail, /^Task: 7 — Fix login$/m)
+    const applied = [
+      { ...(rec[0] as object), mode: "enforce", would: "claude-sonnet-5-5" },
+    ] as AdvisorRecord[]
+    assert.match(
+      decisionDetail(applied, "d1")!,
+      /^builder ran opus 5\.5; the router picked sonnet 5\.5$/m,
+    )
+  })
+
+  it("keeps the raw ids and the v2 breakdown under Details", () => {
+    const detail = decisionDetail(withV2(), "v")!
+    const [human, raw] = detail.split("\nDetails:\n")
+    assert.doesNotMatch(human!, /claude-|score|matrix/)
+    assert.match(raw!, /^models: claude-opus-5-5/)
+    assert.match(raw!, /^score 5 = /m)
+  })
+
+  it("words the alerts list: title, task, what the router did, then the raw detail", () => {
+    const alert = {
+      v: 1,
+      kind: "alert",
+      t: t(5),
+      alert: "second-failure",
+      agent: "builder",
+      session: "root",
+      decision: "d1",
+      detail: "risk medium, score 0 low; matrix medium×low → standard",
+    } as AdvisorRecord
+    const summarised = [
+      { ...(records[0] as object), summary: "Fix login" } as AdvisorRecord,
+      alert,
+    ]
+    assert.deepEqual(alertLines(summarised, 20, { top: [] }).map(strip), [
+      "hh:mm  builder failed twice",
+      "       Fix login",
+      "       Would retry on sonnet 5.5",
+      "       details: risk medium, score 0 low; matrix medium×low → standard",
+    ])
+    assert.doesNotMatch(
+      alertLines(summarised, 20, { summary: false }).join("\n"),
+      /Fix login/,
+    )
+  })
+
+  it("builds the alert context from the config", () => {
+    const cfg = defaultConfig()
+    assert.deepEqual(alertContextOf(cfg).top, [
+      cfg.ladder.at(-1),
+      cfg.v2.levelOrder.at(-1),
+    ])
+    assert.equal(alertContextOf(cfg).summary, true)
+    assert.equal(
+      alertContextOf({ ...cfg, log: { summary: false } }).summary,
+      false,
+    )
+  })
+
+  it("falls back to the task id in a toast when summaries are off", () => {
+    const withSummary = [
+      { ...(records[0] as object), id: "d9", summary: "Fix login" },
+    ] as AdvisorRecord[]
+    const alert = {
+      v: 1,
+      kind: "alert",
+      t: t(5),
+      alert: "second-failure",
+      agent: "builder",
+      session: "root",
+      task: "1143",
+      decision: "d9",
+    } as never
+    assert.match(alertNotice(alert, withSummary, {}).message, /Fix login/)
+    assert.match(
+      alertNotice(alert, withSummary, { summary: false }).message,
+      /^task 1143$/m,
+    )
+  })
+
+  it("writes calibration in plain words, with the level's model and the raw path kept", () => {
+    const c = parseCalibration(
+      JSON.stringify({
+        v: 1,
+        t: t(1),
+        window_days: 30,
+        tasks: 8,
+        buckets: [
+          {
+            risk: "medium",
+            difficulty: "high",
+            level: "standard",
+            tasks: 8,
+            firstPass: 0.5,
+            avgRetries: 1.4,
+            costPerTask: 0.83,
+          },
+        ],
+        backtest: { monotonic: true, byDifficulty: {} },
+        suggestions: [
+          {
+            id: "m",
+            kind: "matrix",
+            path: "v2.policy.matrix.medium.high",
+            from: "standard",
+            to: "frontier",
+            why: "first-pass 50% over 8 tasks, under 70%",
+          },
+        ],
+      }),
+    )!
+    const text = calibrationReport(c, {
+      standard: { model: "claude-sonnet-5-5" },
+    }).join("\n")
+    assert.match(text, /first try ok/)
+    assert.match(text, /^medium +high +standard \(sonnet 5\.5\) +8 +50%/m)
+    const [o] = suggestionOptions(c)
+    assert.equal(
+      o!.title,
+      "For medium risk, high difficulty: use frontier instead of standard",
+    )
+    assert.match(o!.description, /v2\.policy\.matrix\.medium\.high$/)
+    assert.equal(
+      suggestionTitle({
+        id: "x",
+        kind: "matrix",
+        path: "v2.other",
+        from: 1,
+        to: 2,
+        why: "",
+      }),
+      "v2.other: 1 → 2",
+    )
+  })
+
+  it("lists the task summary switch under Privacy", () => {
+    const rows = settingRows("privacy", defaultConfig())
+    assert.deepEqual(rows[0]!.path, ["log", "summary"])
+    assert.equal(rows[0]!.shown, "true")
+    assert.deepEqual(rows[0]!.choices, ["true", "false"])
+    assert.equal(rows[0]!.kind, "boolean")
   })
 })
 
@@ -347,8 +554,11 @@ describe("decision rows", () => {
   it("lists newest first, at most the limit, with the advisor of the routed child", () => {
     const rows = decisionRows(records, 20)
     assert.equal(rows.length, 1)
-    assert.match(rows[0].title, /^\d\d:\d\d  builder  opus → sonnet$/)
-    assert.equal(rows[0].description, "read-only · advisor 2 calls $0.04")
+    assert.match(rows[0].title, /^\d\d:\d\d  builder  opus 5.5 → sonnet 5.5$/)
+    assert.equal(
+      rows[0].description,
+      "read-only agent · Advisor consulted 2 times ($0.04)",
+    )
     assert.equal(rows[0].category, "Would change the model")
     const many = Array.from({ length: 30 }, (_, n) => copy(`x${n}`))
     const rows2 = decisionRows(many, 20)
@@ -374,7 +584,16 @@ describe("decision rows", () => {
 describe("decision detail", () => {
   it("states what ran, what the router picks and why", () => {
     const text = decisionDetail(records, "d1") ?? ""
-    assert.match(text, /^builder: ran opus, router would pick sonnet$/m)
+    assert.match(
+      text,
+      /^builder ran opus 5\.5; the router would pick sonnet 5\.5$/m,
+    )
+    assert.match(text, /^Why: read-only agent$/m)
+    assert.match(text, /^Details:$/m)
+    assert.match(
+      text,
+      /^models: claude-opus-5-5 \(ran\), claude-sonnet-5-5 \(router\)$/m,
+    )
     assert.match(text, /^why: rule:read-only: rule read-only$/m)
     assert.equal(decisionDetail(records, "nope"), undefined)
   })
@@ -634,16 +853,24 @@ describe("v2 decision detail", () => {
 
   it("is part of the detail only when the record has v2", () => {
     const d = decisionDetail(withV2(), "v") as string
-    assert.match(d, /^builder: ran opus/)
+    assert.match(d, /^builder ran opus 5\.5/)
     assert.match(d, /\nlevel: frontier/)
     assert.doesNotMatch(decisionDetail(records, "d1") as string, /level:|score/)
   })
 
-  it("adds level and difficulty to the sidebar row and the list", () => {
-    const panel = routerPanel(withV2(), "root")
-    assert.equal(panel?.rows[0].why, "read-only · frontier high")
-    assert.equal(routerPanel(records, "root")?.rows[0].why, "read-only")
-    assert.match(decisionRows(withV2())[0].description, /frontier high/)
+  it("explains a v2 decision in the sidebar row and the list", () => {
+    const noRule = (): AdvisorRecord[] => [
+      { ...(withV2()[0] as any), rule: undefined, source: "v2" },
+    ]
+    assert.equal(
+      routerPanel(noRule(), "root")?.rows[0].why,
+      "high risk, high difficulty",
+    )
+    assert.equal(routerPanel(records, "root")?.rows[0].why, "read-only agent")
+    assert.match(
+      decisionRows(noRule())[0].description,
+      /^high risk, high difficulty/,
+    )
   })
 
   it("says so when no fact was recorded", () => {
@@ -977,8 +1204,15 @@ describe("calibration view", () => {
         [false, "For information"],
       ],
     )
-    assert.equal(o[1]!.title, "v2.difficulty.cutoffs.high: 4 → 3")
-    assert.equal(o[2]!.title, "v2.levels.fast")
+    assert.equal(
+      o[1]!.title,
+      "Call a task high difficulty from score 3 (now 4)",
+    )
+    assert.equal(
+      o[1]!.description,
+      "low has more retries than high · v2.difficulty.cutoffs.high",
+    )
+    assert.equal(o[2]!.title, "Level fast is never chosen")
   })
 
   it("turns a suggestion into a config edit, keeping a numeric value numeric", () => {

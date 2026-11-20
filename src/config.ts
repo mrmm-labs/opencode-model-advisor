@@ -57,6 +57,11 @@ export type Config = {
   otel: { endpoint?: string; headers?: Record<string, string> }
   /** The session sidebar block: how much it shows and where it sits. */
   tui: { sidebar: SidebarMode; position: "top" | "bottom" }
+  /** What the decisions file records beyond the routing itself. */
+  log: {
+    /** A one-line, credential-filtered summary of each dispatched task. */
+    summary: boolean
+  }
   /** Routing v2 (docs/spec-routing-v2.md); off unless v2.enabled. */
   v2: RoutingV2Config
 }
@@ -86,6 +91,7 @@ export const defaultConfig = (): Config => ({
   },
   otel: {},
   tui: { sidebar: "compact", position: "bottom" },
+  log: { summary: true },
   v2: defaultRoutingV2(),
 })
 
@@ -652,6 +658,12 @@ export function buildConfig(raw: unknown): {
     else if (side !== undefined)
       warn('tui.sidebar must be "full", "compact" or "off"')
   } else if (raw.tui !== undefined) warn("tui must be an object")
+
+  if (isObject(raw.log)) {
+    const summary = raw.log.summary
+    if (typeof summary === "boolean") config.log.summary = summary
+    else if (summary !== undefined) warn("log.summary must be true or false")
+  } else if (raw.log !== undefined) warn("log must be an object")
 
   if (isObject(raw.v2)) buildV2(raw.v2, config.v2, warn)
   else if (raw.v2 !== undefined)

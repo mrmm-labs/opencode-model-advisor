@@ -290,6 +290,37 @@ export const SUBS: Sub[] = [
   }),
 ]
 
+/** `/advisor pin <target> <tier>` as typed through its own slash entry: `/advisor-pin <target> <tier>`. */
+export const slashUsage = (s: Sub): string =>
+  s.usage.replace(/^\/advisor (\S+)/, "/advisor-$1")
+
+export type SlashEntry = {
+  id: string
+  /** The slash name the host completes. */
+  name: string
+  title: string
+  description: string
+  /** The sub-command it runs. */
+  sub: string
+}
+
+/**
+ * One host slash entry per sub-command. The host completes only a slash
+ * command's name, so `/advisor-pin` is how a sub-command shows up in its list.
+ */
+export const slashEntries = (subs: Sub[]): SlashEntry[] =>
+  subs.map((s) => ({
+    id: `model-advisor.${s.name}`,
+    name: `advisor-${s.name}`,
+    title: `advisor: ${s.name}`,
+    description: `${s.description} — ${slashUsage(s)}`,
+    sub: s.name,
+  }))
+
+/** What `dispatch` is given for a slash entry's `input`: the sub-command, then the rest the host passed. */
+export const forward = (name: string, rest?: string): string =>
+  `${name} ${rest ?? ""}`.trim()
+
 const OPEN = "Open the picker"
 
 /** Usage table for the help dialog, grouped like the picker. */

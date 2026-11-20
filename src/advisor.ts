@@ -246,8 +246,9 @@ export function createAdvisor(deps: Deps) {
       rule: decision.rule,
       reason: decision.reason.slice(0, 200),
       task: markers.hint.task,
-      summary:
-        summarize(d.description?.trim() || markers.stripped) || undefined,
+      summary: config.log.summary
+        ? summarize(d.description?.trim() || markers.stripped) || undefined
+        : undefined,
       ...(decision.v2 ? { v2: decision.v2 } : {}),
     })
     if (decision.v2?.disagreements.length) {

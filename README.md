@@ -89,20 +89,21 @@ The judge works in both modes. In shadow it still makes its call so `would` is a
 `~/.config/opencode/model-advisor.jsonc` (JSONC), or the path in `OPENCODE_MODEL_ADVISOR_CONFIG`.
 Invalid parts fall back to defaults and a warning goes to the log.
 
-| Key             | Default                        | Meaning                                                                             |
-| --------------- | ------------------------------ | ----------------------------------------------------------------------------------- |
-| `mode`          | `shadow`                       | `shadow` or `enforce`                                                               |
-| `provider`      | `anthropic`                    | Provider id for tiers that name a bare model id                                     |
-| `tiers`         | haiku, sonnet, opus (5.5)      | Tier name to model id. Key order is the ladder, cheapest first                      |
-| `default`       | `sonnet`                       | Tier when nothing else decides                                                      |
-| `orchestrators` | `build`, `plan`, `coordinator` | Agents that are never routed                                                        |
-| `pins`          | none                           | Agent name or `session:<id>` to tier                                                |
-| `rules`         | none                           | `{ id, when, tier, label? }`, see above                                             |
-| `judge`         | disabled, haiku, 8000 ms       | `{ enabled, model, timeoutMs }`                                                     |
-| `advisor`       | disabled, top tier, 2 uses     | `{ enabled, model, maxUses, maxContextTokens, alertSteps }`, see Advising           |
-| `tui.sidebar`   | `compact`                      | Session sidebar block: `compact` (3 rows), `full` (one entry per decision) or `off` |
-| `tui.position`  | `bottom`                       | Where the block sits in the session sidebar: `top` or `bottom`                      |
-| `otel.endpoint` | env or off                     | OTLP/HTTP base URL; `OTEL_EXPORTER_OTLP_ENDPOINT` is the fallback                   |
+| Key             | Default                        | Meaning                                                                                               |
+| --------------- | ------------------------------ | ----------------------------------------------------------------------------------------------------- |
+| `mode`          | `shadow`                       | `shadow` or `enforce`                                                                                 |
+| `provider`      | `anthropic`                    | Provider id for tiers that name a bare model id                                                       |
+| `tiers`         | haiku, sonnet, opus (5.5)      | Tier name to model id. Key order is the ladder, cheapest first                                        |
+| `default`       | `sonnet`                       | Tier when nothing else decides                                                                        |
+| `orchestrators` | `build`, `plan`, `coordinator` | Agents that are never routed                                                                          |
+| `pins`          | none                           | Agent name or `session:<id>` to tier                                                                  |
+| `rules`         | none                           | `{ id, when, tier, label? }`, see above                                                               |
+| `judge`         | disabled, haiku, 8000 ms       | `{ enabled, model, timeoutMs }`                                                                       |
+| `advisor`       | disabled, top tier, 2 uses     | `{ enabled, model, maxUses, maxContextTokens, alertSteps }`, see Advising                             |
+| `tui.sidebar`   | `compact`                      | Session sidebar block: `compact` (3 rows), `full` (one entry per decision) or `off`                   |
+| `log.summary`   | `true`                         | Write a one-line, credential-filtered summary of each task to the decisions file; `false` writes none |
+| `tui.position`  | `bottom`                       | Where the block sits in the session sidebar: `top` or `bottom`                                        |
+| `otel.endpoint` | env or off                     | OTLP/HTTP base URL; `OTEL_EXPORTER_OTLP_ENDPOINT` is the fallback                                     |
 
 `otel.headers` adds request headers (for an authenticated collector). The log is
 `~/.local/share/opencode/model-advisor/advisor.log` (`OPENCODE_MODEL_ADVISOR_LOG` overrides it).
@@ -305,15 +306,17 @@ risk, low difficulty`). `Suggested` is what the router picks, with `cheaper` or 
   `sonnet → opus` (highlighted) is what ran, then what the router picks; one model means they
   agree. `"off"` shows no sidebar block.
 
-- **One command, `/advisor`.** Click the sidebar title or type `/advisor` for a searchable picker of
-  every sub-command (name, what it does, and its usage line underneath). Picking one asks for its
-  arguments in order: a picker of the live values (the current one marked) or a prompt with a
-  placeholder, prefilled where there is a default. Esc at any step cancels with nothing changed.
-  The typed form is the fast path: `/advisor pin builder opus` runs at once, `/advisor pin` asks
-  only for the missing arguments, `/advisor pi` runs the one sub-command it matches (or opens the
-  picker narrowed to the ones it could mean), and a bad value says what is valid and reopens that
-  argument's picker. OpenCode completes a slash command's name but not what follows it, so the
-  picker is the completion list.
+- **`/advisor`** (or a click on the sidebar title) opens a searchable picker of every sub-command
+  (name, what it does, and its usage line underneath). Picking one asks for its arguments in order:
+  a picker of the live values (the current one marked) or a prompt with a placeholder, prefilled
+  where there is a default. Esc at any step cancels with nothing changed. The typed form is the fast
+  path: `/advisor pin builder opus` runs at once, `/advisor pin` asks only for the missing
+  arguments, `/advisor pi` runs the one sub-command it matches (or opens the picker narrowed to the
+  ones it could mean), and a bad value says what is valid and reopens that argument's picker.
+- **`/advisor-<name>`**: OpenCode completes a slash command's name but not what follows it, so each
+  sub-command is also a slash entry of its own, with its usage in the description (for example
+  `/advisor-pin <target> <tier>`). It takes the same arguments and runs exactly like
+  `/advisor <name> ...`. They are also the entries of the command palette.
 
   <!-- commands:start -->
 
@@ -339,14 +342,21 @@ risk, low difficulty`). `Suggested` is what the router picks, with `cheaper` or 
   suggestion to apply. `mode enforce` asks first. Each sub-command is also in the command palette as
   `advisor: <name>`.
 
-  Migrating from the earlier commands: `/advisor-mode` is `/advisor mode <shadow|enforce>` (it
-  used to toggle), `/advisor-pin` is `/advisor pin <target> <tier>` and `/advisor unpin <target>`,
-  `/advisor-decisions` is `/advisor decisions`, `/advisor-alert` is `/advisor alert`,
-  `/advisor-check` is `/advisor check <input...>`, `/advisor-settings` is
-  `/advisor settings <section>`, `/advisor-calibration` is `/advisor calibration <item>`. The picker's
-  old _This session_, _Rules_ and _Alerts_ entries are `/advisor session`, `rules` and `alerts`. The
-  `/advisor-*` names are gone.
+  `settings` walks the rows of the section you pick, and `calibration` takes `report` or a
+  suggestion to apply. `mode enforce` asks first.
 
+  Migrating from the commands before 0.5: `/advisor-mode` (it used to toggle) is now
+  `/advisor-mode <shadow|enforce>`, `/advisor-pin` is `/advisor-pin <target> <tier>` plus
+  `/advisor-unpin <target>`, and `/advisor-settings`, `/advisor-calibration` and `/advisor-check`
+  take their section, item and input. The picker's old _This session_, _Rules_ and _Alerts_ entries
+  are `/advisor-session`, `/advisor-rules` and `/advisor-alerts`.
+
+- **The dialogs speak like the compact view.** `session`, `decisions`, `rules`, `alerts`,
+  `calibration` and the `"full"` sidebar say `watching only` or `choosing models`, show models as
+  `opus 5.5`, give the reason as a sentence (a rule's `label`, the built-in one, or `medium risk,
+low difficulty` for routing v2) and total the day as `would save ≈ $1.50` (`saved` in enforce
+  mode). The raw ids, the original reason and the v2 breakdown stay under `Details:` in a decision
+  and in a `details:` line per alert; a calibration suggestion keeps its config path.
 - **Toasts** for alerts: a task failing twice, facts disagreeing, the judge failing, the advisor
   refused. Alerts never block anything. A toast says who, where, what and what the router did:
 
@@ -369,7 +379,9 @@ risk, low difficulty`). `Suggested` is what the router picks, with `cheaper` or 
 The TUI is a separate process from the server plugin, so the two share files only. The plugin
 appends one line per decision to `decisions.jsonl` next to `advisor.log` (rolled to `.1` past 256 KB;
 no prompt text, only a one-line `summary` of the task (the task tool's description, else the first
-80 characters of the prompt, with anything that looks like a credential replaced by `[secret]`),
+80 characters of the prompt, with anything that looks like a credential replaced by `[secret]`;
+`log.summary: false`, or `/advisor-settings` then Privacy, stops writing it and toasts fall back to
+`task <id>`; summaries already in the file stay until it rolls),
 reasons cut to 200 characters; `OPENCODE_MODEL_ADVISOR_DECISIONS` overrides the
 path). The TUI reads it, and changes behaviour only by editing `model-advisor.jsonc` (`mode`,
 `pins`): one top-level value is replaced, through a temp file and a rename, and every comment in the
