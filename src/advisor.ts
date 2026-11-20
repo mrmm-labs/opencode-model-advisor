@@ -50,10 +50,18 @@ type Pending = {
   id: string
   agent: string
   would: string
+  /** The model the caller asked for; what enforce replaced. */
+  caller: string
   at: number
   shadow: boolean
 }
-type Child = { agent: string; would: string; model: string; shadow: boolean }
+type Child = {
+  agent: string
+  would: string
+  caller: string
+  model: string
+  shadow: boolean
+}
 
 /** Waits for `work` at most `ms`, and never rejects. */
 async function within<T>(work: Promise<T>, ms: number): Promise<T | undefined> {
@@ -296,7 +304,14 @@ export function createAdvisor(deps: Deps) {
 
     const key = `${d.sessionID}|${agent}`
     const queue = pending.get(key) ?? []
-    queue.push({ id, agent, would, at: end, shadow: !enforce })
+    queue.push({
+      id,
+      agent,
+      would,
+      caller: callerModel,
+      at: end,
+      shadow: !enforce,
+    })
     pending.set(key, queue.slice(-100))
     if (!enforce) return undefined
     const applying: Applied = {}
@@ -332,6 +347,7 @@ export function createAdvisor(deps: Deps) {
         children.set(data.sessionID, {
           agent: p.agent,
           would: p.would,
+          caller: p.caller,
           model: bareModel(data.model?.id),
           shadow: p.shadow,
         })
@@ -352,8 +368,10 @@ export function createAdvisor(deps: Deps) {
         if (child && data.model?.id) child.model = bareModel(data.model.id)
       } else if (e.type === "session.step.ended") {
         const child = children.get(data.sessionID)
-        if (!child?.shadow || !child.model || child.model === child.would)
-          return
+        // Shadow compares the caller's model with the router's pick; enforce
+        // compares the router's applied pick with what the caller asked for.
+        const other = child?.shadow ? child.would : child?.caller
+        if (!child || !child.model || !other || child.model === other) return
         // OpenCode reports no cost on a subscription account, so price the tokens at list.
         const cost =
           typeof data.cost === "number" && data.cost > 0
@@ -362,8 +380,9 @@ export function createAdvisor(deps: Deps) {
               ? listCostUsd(child.model, data.tokens as Usage)
               : undefined
         if (cost === undefined) return
-        const saving = savingUsd(cost, child.model, child.would)
-        if (saving === undefined || saving === 0) return
+        const priced = savingUsd(cost, child.model, other)
+        if (priced === undefined || priced === 0) return
+        const saving = child.shadow ? priced : -priced
         record({
           v: 1,
           kind: "saving",
@@ -371,6 +390,7 @@ export function createAdvisor(deps: Deps) {
           session: data.sessionID,
           usd: saving,
         })
+        if (!child.shadow) return
         const labels = {
           agent: child.agent,
           model: child.model,

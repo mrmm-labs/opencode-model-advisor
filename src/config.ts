@@ -25,6 +25,8 @@ export type MatchInput = { agent: string; prompt: string; hint: Hint }
 
 export type Rule = {
   id: string
+  /** Short sentence for the sidebar's "Why" row, e.g. "touches auth / security". */
+  label?: string
   tier: string
   test: (input: MatchInput) => boolean
   /** Matches on the agent alone; routing v2 treats such a rule as a floor. */
@@ -591,7 +593,14 @@ export function buildConfig(raw: unknown): {
           return warn(`rule ${id}: ${test}; ignored`)
         const agentOnly =
           isObject(r.when) && Object.keys(r.when).every((k) => k === "agent")
-        config.rules.push({ id, tier, test, agentOnly })
+        const label = typeof r.label === "string" ? r.label.trim() : ""
+        config.rules.push({
+          id,
+          tier,
+          test,
+          agentOnly,
+          ...(label ? { label } : {}),
+        })
       })
     } else warn("rules must be a list")
   }

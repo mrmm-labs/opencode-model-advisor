@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import { describe, it } from "node:test"
 
 import type { AdvisorRecord } from "./decisions.ts"
-import { defaultConfig } from "./config.ts"
+import { buildConfig, defaultConfig } from "./config.ts"
 import {
   defaultRoutingV2,
   type ConnectorResult,
@@ -21,8 +21,11 @@ import {
   decisionRows,
   parseCalibration,
   parseHintFacts,
+  modeText,
   parseSettingValue,
+  prettyModel,
   routerPanel,
+  ruleLabels,
   rulesLines,
   scoreLine,
   SECTIONS,
@@ -32,6 +35,7 @@ import {
   suggestionEdit,
   suggestionOptions,
   v2Lines,
+  whyText,
 } from "./view.ts"
 
 const t = (n: number) => new Date(1_700_000_000_000 + n * 1000).toISOString()
@@ -133,77 +137,166 @@ describe("compact panel", () => {
     session: "child",
     usd,
   })
+  const rule = (id: string, over: object = {}) =>
+    Object.assign(copy("r"), { rule: id, source: "rule", ...over })
+  const rowsOf = (recs: AdvisorRecord[], opts: object = {}) =>
+    compactPanel(recs, "root", { now: noon, ...opts })?.rows
 
-  it("shows what ran, what the router would pick and today's saving", () => {
+  it("says in words what ran, why, what is suggested and what it saves", () => {
     const panel = compactPanel(
       [...records, saving(1, 7), saving(2, 5.4), saving(30, 99)],
       "root",
-      noon,
+      { now: noon },
     )
     assert.deepEqual(panel, {
       mode: "shadow",
       rows: [
+        { label: "Last task  ", value: "builder · opus 5.5" },
+        { label: "Why        ", value: "read-only agent" },
         {
-          label: "Now     ",
-          value: "opus-5-5",
-          detail: "(rule read-only)",
-        },
-        {
-          label: "Would   ",
-          value: "sonnet-5-5",
-          marker: "▼",
+          label: "Suggested  ",
+          value: "sonnet 5.5 — cheaper",
           tone: "good",
         },
-        { label: "Saved   ", value: "$12 today", tone: "good" },
+        { label: "Today      ", value: "would save ≈ $12", tone: "good" },
       ],
     })
   })
 
   it("hides rows without data and leaves out sessions that routed nothing", () => {
     const same = [Object.assign(copy("s"), { would: "claude-opus-5-5" })]
-    const rows = compactPanel(same, "root", noon)?.rows
     assert.deepEqual(
-      rows?.map((r) => [r.label.trim(), r.marker]),
-      [
-        ["Now", undefined],
-        ["Would", "="],
-      ],
+      rowsOf(same)?.map((r) => r.label.trim()),
+      ["Last task", "Why"],
     )
-    assert.equal(compactPanel(records, "other", noon), undefined)
+    assert.equal(compactPanel(records, "other"), undefined)
     assert.equal(
-      compactPanel([...records, saving(30, 5)], "root", noon)?.rows.length,
-      2,
+      rowsOf([...records, saving(30, 5)])?.length,
+      3,
       "yesterday's saving is not today's",
     )
   })
 
-  it("marks a dearer pick, calls a net loss extra cost, and omits Would when enforce applied it", () => {
+  it("names a stronger pick, and a net loss as extra cost", () => {
     const up = Object.assign(copy("u"), {
       model: "claude-haiku-5-5",
       would: "claude-opus-5-5",
     })
-    const panel = compactPanel([up, saving(1, -2.5)], "root", noon)
-    assert.equal(panel?.rows[1]?.marker, "▲")
-    assert.deepEqual(panel?.rows[2], {
-      label: "Extra   ",
-      value: "$2.50 today",
+    const rows = rowsOf([up, saving(1, -2.5)])
+    assert.deepEqual(rows?.[2], {
+      label: "Suggested  ",
+      value: "opus 5.5 — stronger",
       tone: "changed",
     })
+    assert.equal(rows?.[3]?.value, "would cost ≈ $2.50 more")
+  })
+
+  it("speaks of savings made in enforce mode, and drops Suggested when the pick was applied", () => {
     const applied = Object.assign(copy("e"), {
       mode: "enforce" as const,
       model: "claude-sonnet-5-5",
     })
+    const rows = rowsOf([applied, saving(1, 3)])
     assert.deepEqual(
-      compactPanel([applied], "root", noon)?.rows.map((r) => r.label.trim()),
-      ["Now"],
+      rows?.map((r) => r.label.trim()),
+      ["Last task", "Why", "Today"],
+    )
+    assert.equal(rows?.[2]?.value, "saved ≈ $3.00")
+  })
+
+  it("prettifies model ids", () => {
+    assert.equal(prettyModel("claude-opus-5-5"), "opus 5.5")
+    assert.equal(prettyModel("anthropic/claude-sonnet-5-5"), "sonnet 5.5")
+    assert.equal(prettyModel("claude-sonnet-4-20250514"), "sonnet 4")
+    assert.equal(prettyModel("claude-opus-4-1-20250805"), "opus 4.1")
+    assert.equal(prettyModel("openai/gpt-5"), "gpt-5")
+  })
+
+  it("puts the mode in words", () => {
+    assert.equal(modeText("shadow"), "watching only")
+    assert.equal(modeText("enforce"), "choosing models")
+  })
+
+  it("maps the stock rules and sources to short sentences", () => {
+    const why = (d: object, labels?: Record<string, string>) =>
+      whyText(rule("x", d) as never, labels)
+    for (const [id, text] of [
+      ["critical", "marked critical"],
+      ["risky-area", "touches auth / security"],
+      ["big", "15+ files"],
+      ["review-security", "security review"],
+      ["read-only", "read-only agent"],
+    ])
+      assert.equal(why({ rule: id }), text)
+    assert.equal(why({ rule: "my-rule" }), "my rule")
+    assert.equal(
+      why({ rule: "read-only" }, { "read-only": "never writes" }),
+      "never writes",
+      "the config's label wins",
+    )
+    for (const [source, text] of [
+      ["default", "no rule matched"],
+      ["escalation", "retry after a failure"],
+      ["judge", "judged by the advisor"],
+      ["pin", "pinned by you"],
+    ])
+      assert.equal(why({ rule: undefined, source }), text)
+  })
+
+  it("explains a v2 decision by its risk and difficulty, shortened to fit", () => {
+    const v2 = {
+      risk: "medium",
+      score: { difficulty: "low" },
+      steps: ["matrix medium×low → fast"],
+    }
+    const d = rule("x", { rule: undefined, source: "v2", v2 }) as never
+    assert.equal(whyText(d), "medium risk, low difficulty")
+    assert.equal(whyText(d, {}, 20), "medium risk, low effort")
+    assert.equal(
+      whyText(
+        rule("x", {
+          rule: undefined,
+          source: "v2",
+          v2: { ...v2, steps: ["retry 1 → fast"] },
+        }) as never,
+      ),
+      "retry after a failure",
     )
   })
 
-  it("cuts the reason to the sidebar width", () => {
-    const long = Object.assign(copy("l"), { rule: "x".repeat(60) })
-    const [now] = compactPanel([long], "root", noon)?.rows ?? []
-    assert.ok(`  ${now.label}${now.value}  ${now.detail}`.length <= 38)
-    assert.match(now.detail ?? "", /…$/)
+  it("uses a rule's label from the config", () => {
+    assert.deepEqual(
+      ruleLabels(
+        buildConfig({
+          rules: [
+            {
+              id: "a",
+              when: { agent: "x" },
+              tier: "opus",
+              label: " touches billing ",
+            },
+            { id: "b", when: { agent: "y" }, tier: "opus" },
+          ],
+        }).config,
+      ),
+      { a: "touches billing" },
+    )
+    assert.equal(
+      rowsOf([rule("risky-area")], {
+        labels: { "risky-area": "auth work" },
+      })?.[1]?.value,
+      "auth work",
+    )
+  })
+
+  it("cuts a long line to the sidebar width", () => {
+    const long = Object.assign(copy("l"), {
+      agent: "reviewer-security-extra",
+      rule: "x".repeat(60),
+    })
+    for (const r of rowsOf([long]) ?? [])
+      assert.ok(`  ${r.label}${r.value}`.length <= 38, r.value)
+    assert.match(rowsOf([long])?.[1]?.value ?? "", /…$/)
   })
 
   it("moves the verbose detail to text for the dialog", () => {

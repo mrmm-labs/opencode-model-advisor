@@ -157,42 +157,109 @@ export type CompactRow = {
   /** Dim, fixed width. */
   label: string
   value: string
-  /** Router goes dearer (▲), cheaper (▼), the same (=) or elsewhere (≠). */
-  marker?: "▲" | "▼" | "=" | "≠"
-  /** Short why, dropped first when the line is too wide. */
-  detail?: string
   tone?: Tone
 }
 
 export type CompactPanel = { mode: string; rows: CompactRow[] }
 
-export const COMPACT_LABEL_WIDTH = 8
+export const COMPACT_LABEL_WIDTH = 11
 /** Usable columns in OpenCode's session sidebar (42 less its padding). */
 export const COMPACT_WIDTH = 38
 
-/** `anthropic/claude-sonnet-5-5` -> `sonnet-5-5`. */
+const MODE_WORDS: Record<string, string> = {
+  shadow: "watching only",
+  enforce: "choosing models",
+}
+
+/** `shadow` -> "watching only". */
+export const modeText = (mode: string): string => MODE_WORDS[mode] ?? mode
+
+/** `anthropic/claude-sonnet-5-5` -> `sonnet-5-5`, the id without provider or vendor prefix. */
 export const modelName = (id: string): string =>
   id.replace(/^[\w-]+\//, "").replace(/^claude-/, "")
 
-const MARKER_TONE = {
-  "▲": "changed",
-  "▼": "good",
-  "=": "muted",
-  "≠": "changed",
-} as const
+/** `claude-opus-5-5` -> "opus 5.5"; an id of another shape is kept as is. */
+export function prettyModel(id: string): string {
+  const m = /^claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?(?:-\d{8})?$/.exec(
+    id.replace(/^[\w-]+\//, ""),
+  )
+  return m ? `${m[1]} ${m[2]}${m[3] ? `.${m[3]}` : ""}` : modelName(id)
+}
 
-function markerFor(ran: string, would: string): keyof typeof MARKER_TONE {
-  if (modelName(ran) === modelName(would)) return "="
+const RULE_WORDS: Record<string, string> = {
+  critical: "marked critical",
+  "risky-area": "touches auth / security",
+  big: "15+ files",
+  "review-security": "security review",
+  "read-only": "read-only agent",
+}
+
+/** Rule id -> the `label` the config gives it. */
+export const ruleLabels = (
+  cfg: Pick<Config, "rules">,
+): Record<string, string> =>
+  Object.fromEntries(
+    cfg.rules.flatMap((r) => (r.label ? [[r.id, r.label]] : [])),
+  )
+
+/**
+ * Why the router picked what it did, as a short phrase: the rule's own label,
+ * else a built-in sentence for the stock rules and sources, else the id.
+ * `room` is the width it must fit; a v2 reason shortens itself to it.
+ */
+export function whyText(
+  d: DecisionRecord,
+  labels: Record<string, string> = {},
+  room = Infinity,
+): string {
+  const rule = d.rule && (labels[d.rule] ?? RULE_WORDS[d.rule])
+  if (rule) return rule
+  switch (d.source) {
+    case "rule":
+      return d.rule ? d.rule.replace(/[-_]+/g, " ") : "matched a rule"
+    case "default":
+      return "no rule matched"
+    case "escalation":
+      return "retry after a failure"
+    case "judge":
+      return "judged by the advisor"
+    case "judge-failed":
+      return "judge failed, default used"
+    case "pin":
+      return "pinned by you"
+    case "override":
+      return "asked for in the prompt"
+    case "v2": {
+      if (!d.v2) return "routing v2"
+      if (d.v2.steps.some((s) => s.startsWith("retry")))
+        return "retry after a failure"
+      const long = `${d.v2.risk} risk, ${d.v2.score.difficulty} difficulty`
+      return long.length <= room
+        ? long
+        : `${d.v2.risk} risk, ${d.v2.score.difficulty} effort`
+    }
+    default:
+      return d.source
+  }
+}
+
+function direction(
+  ran: string,
+  would: string,
+): "cheaper" | "stronger" | "different" {
   const a = inputPrice(ran)
   const w = inputPrice(would)
-  if (a === undefined || w === undefined || a === w) return "≠"
-  return w > a ? "▲" : "▼"
+  if (a === undefined || w === undefined || a === w) return "different"
+  return w > a ? "stronger" : "cheaper"
 }
+
+const clip = (s: string, n: number) =>
+  s.length > n ? `${s.slice(0, Math.max(n - 1, 1))}…` : s
 
 const usdShort = (usd: number): string =>
   usd >= 10 ? `$${Math.round(usd)}` : money(usd)
 
-/** Net estimated saving of the shadow steps since local midnight, or undefined when there are none. */
+/** Net estimated saving of the steps since local midnight, or undefined when there are none. */
 function savedToday(records: AdvisorRecord[], now: number): number | undefined {
   const start = new Date(now).setHours(0, 0, 0, 0)
   let net: number | undefined
@@ -203,48 +270,55 @@ function savedToday(records: AdvisorRecord[], now: number): number | undefined {
 }
 
 /**
- * The compact sidebar section for one session: what ran now, what the router
- * would pick, and today's saving. A row with no data is left out. Undefined
- * when the session has no decision.
+ * The compact sidebar section for one session, in plain words: the last task
+ * and the model it ran on, why the router chose what it did, what it suggests
+ * when that differs, and today's estimated saving. A row with no data is left
+ * out. Undefined when the session has no decision.
  */
 export function compactPanel(
   records: AdvisorRecord[],
   session: string,
-  now = Date.now(),
-  width = COMPACT_WIDTH,
+  opts: { now?: number; width?: number; labels?: Record<string, string> } = {},
 ): CompactPanel | undefined {
+  const { now = Date.now(), width = COMPACT_WIDTH, labels } = opts
   const { mine } = scope(index(records), session)
   const last = mine.at(-1)
   if (!last) return undefined
+  const room = width - 2 - COMPACT_LABEL_WIDTH
   const pad = (label: string) => label.padEnd(COMPACT_LABEL_WIDTH)
-  const nowModel = modelName(last.model)
-  const room = width - 2 - COMPACT_LABEL_WIDTH - nowModel.length - 2
-  const why = `(${sourceLabel(last).replace(":", " ")})`
+  const ran = prettyModel(last.model)
+  const agent = clip(last.agent, Math.max(room - ran.length - 3, 4))
   const rows: CompactRow[] = [
+    { label: pad("Last task"), value: clip(`${agent} · ${ran}`, room) },
     {
-      label: pad("Now"),
-      value: nowModel,
-      ...(room >= 4
-        ? { detail: why.length > room ? `${why.slice(0, room - 1)}…` : why }
-        : {}),
+      label: pad("Why"),
+      value: clip(whyText(last, labels, room), room),
     },
   ]
-  if (last.mode !== "enforce" || last.model !== last.would) {
-    const marker = markerFor(last.model, last.would)
+  if (modelName(last.model) !== modelName(last.would)) {
+    const dir = direction(last.model, last.would)
     rows.push({
-      label: pad("Would"),
-      value: modelName(last.would),
-      marker,
-      tone: MARKER_TONE[marker],
+      label: pad("Suggested"),
+      value: clip(`${prettyModel(last.would)} — ${dir}`, room),
+      tone:
+        dir === "cheaper" ? "good" : dir === "stronger" ? "changed" : "muted",
     })
   }
   const net = savedToday(records, now)
-  if (net !== undefined && Math.abs(net) >= 0.005)
+  if (net !== undefined && Math.abs(net) >= 0.005) {
+    const shadow = last.mode !== "enforce"
+    const sum = usdShort(Math.abs(net))
     rows.push({
-      label: pad(net > 0 ? "Saved" : "Extra"),
-      value: `${usdShort(Math.abs(net))} today`,
+      label: pad("Today"),
+      value: clip(
+        net > 0
+          ? `${shadow ? "would save" : "saved"} ≈ ${sum}`
+          : `${shadow ? "would cost" : "cost"} ≈ ${sum} more`,
+        room,
+      ),
       tone: net > 0 ? "good" : "changed",
     })
+  }
   return { mode: last.mode, rows }
 }
 
