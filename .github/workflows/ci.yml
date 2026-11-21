@@ -42,6 +42,14 @@ jobs:
       - uses: jdx/mise-action@v2
       - run: mise run test
 
+  openspec:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+      - run: openspec validate --all --strict
+
   validate:
     runs-on: ubuntu-latest
     timeout-minutes: 15

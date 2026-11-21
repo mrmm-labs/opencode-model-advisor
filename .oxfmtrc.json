@@ -11,5 +11,12 @@
   "arrowParens": "always",
   "bracketSameLine": false,
   "bracketSpacing": true,
-  "ignorePatterns": ["CHANGELOG.md", "docs", "pnpm-lock.yaml", "graphify-out"]
+  "ignorePatterns": [
+    "CHANGELOG.md",
+    "docs",
+    "pnpm-lock.yaml",
+    "graphify-out",
+    ".claude",
+    ".opencode"
+  ]
 }

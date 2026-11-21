@@ -3,6 +3,15 @@ node = "24"
 pnpm = "10.32.1"
 # check:v2 loads the plugin under the OpenCode 2 runtime (bun).
 bun = "1"
+"npm:@fission-ai/openspec" = "1.16.1"
+
+[env]
+OPENSPEC_TELEMETRY = "0"
+DO_NOT_TRACK = "1"
+
+[tasks.setup]
+description = "Regenerate the OpenSpec skills and commands for Claude Code and OpenCode"
+run = "openspec update"
 
 [tasks.install]
 description = "Install dependencies from the lockfile"

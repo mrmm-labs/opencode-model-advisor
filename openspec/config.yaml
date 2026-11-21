@@ -1,0 +1,31 @@
+schema: spec-driven
+
+context: |
+  OpenCode plugin (TypeScript, ESM) that chooses the model for each subagent dispatch and records why.
+  It starts in shadow mode (record, change nothing). It also optionally attaches Anthropic's advisor
+  tool to cheaper executors, and ships a TUI sidebar, OpenTelemetry export and a calibration CLI.
+  Targets OpenCode 2; OpenCode 1 works with fewer features (no judge, no saving estimate).
+
+  Stack: pnpm, tsc (dist/ is what OpenCode loads), node --test with --experimental-strip-types,
+  oxlint + oxfmt, bun for the OpenCode 2 runtime check. Tool versions come from mise.toml.
+  Tests: mise run test. Everything CI runs: mise run check.
+  Design docs: docs/spec.md (v1), docs/spec-routing-v2.md, docs/advisor.md, docs/connectors.md,
+  docs/calibration.md, docs/telemetry.md.
+
+  Release: release-please from conventional commits. chore, docs and ci commits cut no release.
+  The PR title is the squash commit and is checked by the semantic-pr workflow.
+
+  Prompt text is never exported or logged verbatim: only a filtered one-line summary may be stored.
+  Anything that changes a model or attaches a tool must be inert in shadow mode.
+  Never put credentials, real account names or home paths in specs, examples or fixtures.
+
+rules:
+  proposal:
+    - State what is out of scope.
+    - State the config keys a change adds or alters, and the default.
+    - State what the change does in shadow mode versus enforce mode.
+  specs:
+    - Write scenarios as WHEN/THEN; each scenario becomes at least one test.
+  tasks:
+    - Each task names its verification step (a test, mise run check, or a delivered file).
+    - Keep each task under 2 hours.
