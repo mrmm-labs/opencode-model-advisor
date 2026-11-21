@@ -16,4 +16,4 @@
 
 ## 4. Release
 
-- [ ] 4.1 `openspec validate --strict`, PR, CI green, release.
+- [x] 4.1 `openspec validate --strict`, PR, CI green, release.
