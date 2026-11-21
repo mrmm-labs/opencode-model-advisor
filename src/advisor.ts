@@ -11,6 +11,7 @@ import type { Telemetry } from "./otel.ts"
 import { listCostUsd, savingUsd, type Usage } from "./pricing.ts"
 import type { ConnectorResult, DecisionV2 } from "./route-v2.ts"
 import { route, RouteState, skipReason, type RouteInput } from "./router.ts"
+import { createUsage, StepTracker, type UsageRow } from "./usage.ts"
 
 export type SessionInfo = { parentID?: string; model?: string }
 
@@ -27,6 +28,8 @@ export type Deps = {
   }
   /** Where decisions, alerts and advisor usage go; the decisions file by default. */
   record?: (record: AdvisorRecord) => void
+  /** Where usage rows go; the usage file by default. */
+  usageSink?: (row: UsageRow) => void
 }
 
 export type Dispatch = {
@@ -92,6 +95,8 @@ export function createAdvisor(deps: Deps) {
   const pending = new Map<string, Pending[]>()
   const children = new Map<string, Child>()
   const record = deps.record ?? appendRecord
+  const usage = createUsage(deps.telemetry, deps.usageSink)
+  const steps = new StepTracker()
   let seq = 0
   const stamp = () => new Date(now()).toISOString()
 
@@ -345,6 +350,29 @@ export function createAdvisor(deps: Deps) {
     return undefined
   }
 
+  /** Net USD saved by a routed child's step, or undefined when there is nothing to compare. */
+  function stepSaving(
+    child: Child | undefined,
+    data: Record<string, any>,
+  ): number | undefined {
+    // Shadow compares the caller's model with the router's pick; enforce
+    // compares the router's applied pick with what the caller asked for.
+    const other = child?.shadow ? child.would : child?.caller
+    if (!child || !child.model || !other || child.model === other)
+      return undefined
+    // OpenCode reports no cost on a subscription account, so price the tokens at list.
+    const cost =
+      typeof data.cost === "number" && data.cost > 0
+        ? data.cost
+        : data.tokens
+          ? listCostUsd(child.model, data.tokens as Usage)
+          : undefined
+    if (cost === undefined) return undefined
+    const priced = savingUsd(cost, child.model, other)
+    if (priced === undefined || priced === 0) return undefined
+    return child.shadow ? priced : -priced
+  }
+
   function onEvent(e: HostEvent): void {
     try {
       const data = e.data
@@ -374,23 +402,22 @@ export function createAdvisor(deps: Deps) {
       } else if (e.type === "session.model.selected") {
         const child = children.get(data.sessionID)
         if (child && data.model?.id) child.model = bareModel(data.model.id)
-      } else if (e.type === "session.step.ended") {
+      } else if (e.type === "session.step.started") {
+        steps.started(data)
+      } else if (
+        e.type === "session.step.ended" ||
+        e.type === "session.step.failed"
+      ) {
         const child = children.get(data.sessionID)
-        // Shadow compares the caller's model with the router's pick; enforce
-        // compares the router's applied pick with what the caller asked for.
-        const other = child?.shadow ? child.would : child?.caller
-        if (!child || !child.model || !other || child.model === other) return
-        // OpenCode reports no cost on a subscription account, so price the tokens at list.
-        const cost =
-          typeof data.cost === "number" && data.cost > 0
-            ? data.cost
-            : data.tokens
-              ? listCostUsd(child.model, data.tokens as Usage)
-              : undefined
-        if (cost === undefined) return
-        const priced = savingUsd(cost, child.model, other)
-        if (priced === undefined || priced === 0) return
-        const saving = child.shadow ? priced : -priced
+        const saving =
+          e.type === "session.step.ended" ? stepSaving(child, data) : undefined
+        const row = steps.ended(
+          data,
+          now(),
+          saving && child ? { usd: saving, shadow: child.shadow } : undefined,
+        )
+        if (row) usage.add(row)
+        if (!child || saving === undefined) return
         record({
           v: 1,
           kind: "saving",
@@ -428,6 +455,7 @@ export function createAdvisor(deps: Deps) {
     config: deps.config,
     telemetry: deps.telemetry,
     record,
+    usage,
     root: (id) => rootOf(id),
     now,
   })
@@ -447,6 +475,7 @@ export function createAdvisor(deps: Deps) {
     },
     onEvent,
     advise,
+    usage,
     dispose: () => deps.telemetry.dispose(),
   }
 }

@@ -41,6 +41,7 @@ function fakeDeps() {
     sessionLines: () => ["session line"],
     rulesLines: () => ["rules line"],
     alertLines: () => ["alert line"],
+    usageLines: (w) => [`usage ${w}`],
     decisionDetail: (id) => `detail of ${id}\nsecond`,
     setMode: async (m) => void calls.push(["setMode", m]),
     pin: rec("pin"),
@@ -488,6 +489,19 @@ describe("registry", () => {
     const { deps, calls } = fakeDeps()
     await dispatch("help", SUBS, deps, fakeUi().ui)
     assert.deepEqual(calls, [["show", "Model router: commands", lines]])
+  })
+
+  it("usage shows today by default, and the window typed", async () => {
+    const a = fakeDeps()
+    await dispatch("usage", SUBS, a.deps, fakeUi().ui)
+    assert.deepEqual(a.calls, [
+      ["show", "Model router: usage", ["usage today"]],
+    ])
+    const b = fakeDeps()
+    await dispatch("usage 7d", SUBS, b.deps, fakeUi().ui)
+    assert.deepEqual(b.calls, [["show", "Model router: usage", ["usage 7d"]]])
+    const entry = slashEntries(SUBS).find((e) => e.sub === "usage")
+    assert.equal(entry?.name, "advisor-usage")
   })
 
   it("matches the README's Commands table", () => {

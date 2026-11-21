@@ -261,6 +261,39 @@ line in `/advisor` (`advisor 2 calls $0.04`), and the decisions list. Alerts (to
 advisor was refused, or an executor below the advisor tier ran a turn of more than `alertSteps`
 steps with no advisor attached (enforce mode).
 
+## Usage
+
+Every executor step and every advisor call is recorded in `usage.jsonl` next to `advisor.log`
+(`OPENCODE_MODEL_ADVISOR_USAGE` overrides the path): provider and model, agent, session, tokens
+(input, output, reasoning, cache read, cache write) and cost. Executor rows need OpenCode 2 (they
+come from its step events); advisor rows also work on OpenCode 1. The advisor's tokens are not in
+the executor's row, so the two never overlap. Where the host reports no cost (a subscription
+account) the row is priced at list from its tokens and marked as an estimate. Past 2 MB the file is
+folded into day x provider x model x agent x role totals that keep the session ids.
+
+`/advisor usage [today|7d|30d]` (or `/advisor-usage`) shows it:
+
+```
+Usage today
+
+Model       Role      Req    In   Out  Cache   Cost
+opus 5.5    executor   41  120k   31k   2.4M  $3.10
+sonnet 5.5  executor   18   40k  9.0k   730k  $0.42
+opus 5.5    advisor     6   18k  2.1k      0  $0.40
+
+Total                  65  178k   42k   3.1M  $3.92
+
+Advisor share of cost: 10% ($0.40 of $3.92)
+Suggested: would save ≈ $0.90 (not applied) · applied: nothing yet
+Points: n/a (the plugin has no weekly-quota source)
+Out includes reasoning; Cache is read plus write.
+Cost is a list-price estimate where the host reports none.
+```
+
+`Suggested` is the shadow estimate, `applied` what the router's pick saved in enforce mode. Weekly-quota
+points are not derivable from the plugin, so they are shown as `n/a`. The metrics
+`model_advisor.usage.requests`, `.tokens` and `.cost_usd` carry `model`, `role` and `agent` for Grafana.
+
 ## TUI
 
 A directory plugin that has a `tui.tsx` next to its `index.js` gets the TUI loaded by OpenCode 2
@@ -268,7 +301,7 @@ A directory plugin that has a `tui.tsx` next to its `index.js` gets the TUI load
 pick it up; the server plugin does not need a restart.
 
 - **Sidebar** (`tui.sidebar`, restart the TUI after changing it): by default a compact section, a
-  title and at most four rows in plain words, appended to the sidebar so another plugin can still
+  title and at most five rows in plain words, appended to the sidebar so another plugin can still
   claim the top (`tui.position: "top"` prepends it instead).
 
   ```
@@ -276,7 +309,8 @@ pick it up; the server plugin does not need a restart.
     Last task  builder · opus 5.5
     Why        touches auth / security
     Suggested  sonnet 5.5 — cheaper
-    Today      would save ≈ $1.50
+    Today      opus $3.10 · adv $0.40
+    Saving     would save ≈ $1.50
   ```
 
   The title says what the router is doing: `watching only` (mode `shadow`) or `choosing models`
@@ -285,7 +319,9 @@ pick it up; the server plugin does not need a restart.
 auth / security`, `15+ files`, `security review`, `read-only agent`, `no rule matched`, `retry
 after a failure`, `judged by the advisor`), or for routing v2 the risk and difficulty (`medium
 risk, low difficulty`). `Suggested` is what the router picks, with `cheaper` or `stronger`; it is
-  left out when the pick is the model that ran. `Today` is the estimated saving since midnight
+  left out when the pick is the model that ran. `Today` is today's spend: the two dearest executor
+  models, then the advisor (`advisor` becomes `adv` when the sidebar is narrow); it shows even in
+  a session with no decision. `Saving` is the estimated saving since midnight
   across all sessions: `would save` in shadow mode, `saved` in enforce mode (against the model the
   caller asked for), `cost ... more` when it is a net loss; `≈` marks an estimate priced at list.
   A row with no data is left out. A routed subagent session shows its own decision; the session that
@@ -326,6 +362,7 @@ risk, low difficulty`). `Suggested` is what the router picks, with `cheaper` or 
   | `/advisor session`              | Decisions and advisor usage of the session you are in                   |
   | `/advisor rules`                | Rules, pins and the default tier                                        |
   | `/advisor alerts`               | Recent alerts, newest first                                             |
+  | `/advisor usage [window]`       | What each model cost, executor and advisor: today, 7d or 30d            |
   | `/advisor decisions <decision>` | The last 20 decisions; pick one for the full reason                     |
   | `/advisor calibration <item>`   | The calibration report, and suggestions to apply                        |
   | `/advisor mode <mode>`          | Watching only (shadow) or choosing models (enforce); enforce asks first |
@@ -418,19 +455,22 @@ plugins' spans for one session tree land in one trace.
 
 **Metrics** (delta temporality):
 
-| Name                                            | Type      | Attributes                                             |
-| ----------------------------------------------- | --------- | ------------------------------------------------------ |
-| `model_advisor.decisions`                       | counter   | `agent`, `source`, `mode`, `model`, `would`, `changed` |
-| `model_advisor.escalations`                     | counter   | `agent`, `step` (`climb` or `stop`)                    |
-| `model_advisor.judge.calls`                     | counter   | `outcome` (`ok`, `timeout`, `error`, `invalid`)        |
-| `model_advisor.decision.duration`               | histogram | `agent`, `source`, `mode`; ms, includes the judge      |
-| `model_advisor.shadow.estimated_saving_usd`     | counter   | `agent`, `model`, `would`                              |
-| `model_advisor.shadow.estimated_extra_cost_usd` | counter   | `agent`, `model`, `would`                              |
-| `model_advisor.advisor.calls`                   | counter   | `agent`                                                |
-| `model_advisor.advisor.tokens`                  | counter   | `agent`, `kind` (`input`, `output`)                    |
-| `model_advisor.advisor.cost_usd`                | counter   | `agent`; advisor tokens at list price, input uncached  |
-| `model_advisor.advisor.refusals`                | counter   | `agent`                                                |
-| `model_advisor.advisor.would_attach`            | counter   | `agent`; shadow mode                                   |
+| Name                                            | Type      | Attributes                                                                                     |
+| ----------------------------------------------- | --------- | ---------------------------------------------------------------------------------------------- |
+| `model_advisor.decisions`                       | counter   | `agent`, `source`, `mode`, `model`, `would`, `changed`                                         |
+| `model_advisor.escalations`                     | counter   | `agent`, `step` (`climb` or `stop`)                                                            |
+| `model_advisor.judge.calls`                     | counter   | `outcome` (`ok`, `timeout`, `error`, `invalid`)                                                |
+| `model_advisor.decision.duration`               | histogram | `agent`, `source`, `mode`; ms, includes the judge                                              |
+| `model_advisor.shadow.estimated_saving_usd`     | counter   | `agent`, `model`, `would`                                                                      |
+| `model_advisor.shadow.estimated_extra_cost_usd` | counter   | `agent`, `model`, `would`                                                                      |
+| `model_advisor.advisor.calls`                   | counter   | `agent`                                                                                        |
+| `model_advisor.advisor.tokens`                  | counter   | `agent`, `kind` (`input`, `output`)                                                            |
+| `model_advisor.advisor.cost_usd`                | counter   | `agent`; advisor tokens at list price, input uncached                                          |
+| `model_advisor.advisor.refusals`                | counter   | `agent`                                                                                        |
+| `model_advisor.advisor.would_attach`            | counter   | `agent`; shadow mode                                                                           |
+| `model_advisor.usage.requests`                  | counter   | `model`, `role`, `agent`; executor steps and advisor calls                                     |
+| `model_advisor.usage.tokens`                    | counter   | `model`, `role`, `agent`, `kind` (`input`, `output`, `reasoning`, `cache_read`, `cache_write`) |
+| `model_advisor.usage.cost_usd`                  | counter   | `model`, `role`, `agent`; reported cost, else list price                                       |
 
 `changed` is true when the chosen model differs from the caller's: what enforce would change.
 

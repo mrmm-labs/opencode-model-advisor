@@ -58,7 +58,15 @@ describe("grafana dashboard", () => {
     assert.equal(d.templating.list[0].name, "DS_PROMETHEUS")
     assert.deepEqual(
       d.panels.filter((p: any) => p.type === "row").map((p: any) => p.title),
-      ["Levels", "Score", "Sources", "Connectors", "Calibration", "Advisor"],
+      [
+        "Levels",
+        "Score",
+        "Sources",
+        "Connectors",
+        "Calibration",
+        "Advisor",
+        "Usage",
+      ],
     )
     const ids = d.panels.map((p: any) => p.id)
     assert.equal(new Set(ids).size, ids.length)

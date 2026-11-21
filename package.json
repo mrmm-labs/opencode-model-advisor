@@ -44,7 +44,7 @@
   "scripts": {
     "build": "rm -rf dist && tsc",
     "typecheck": "tsc --noEmit",
-    "test": "OPENCODE_MODEL_ADVISOR_CONFIG=/nonexistent/model-advisor.jsonc OPENCODE_MODEL_ADVISOR_CALIBRATION=/nonexistent/calibration.json OPENCODE_MODEL_ADVISOR_LOG=/dev/null OPENCODE_MODEL_ADVISOR_DECISIONS=/dev/null node --test --test-timeout=60000 --experimental-strip-types 'src/**/*.test.ts'",
+    "test": "OPENCODE_MODEL_ADVISOR_CONFIG=/nonexistent/model-advisor.jsonc OPENCODE_MODEL_ADVISOR_CALIBRATION=/nonexistent/calibration.json OPENCODE_MODEL_ADVISOR_LOG=/dev/null OPENCODE_MODEL_ADVISOR_DECISIONS=/dev/null OPENCODE_MODEL_ADVISOR_USAGE=/dev/null node --test --test-timeout=60000 --experimental-strip-types 'src/**/*.test.ts'",
     "test:integration": "pnpm run build && node --experimental-strip-types scripts/integration.ts",
     "smoke:telemetry": "pnpm run build && node --experimental-strip-types scripts/smoke-telemetry.ts",
     "lint": "oxlint && oxfmt --check .",

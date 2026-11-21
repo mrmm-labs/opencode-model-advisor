@@ -19,6 +19,7 @@ import { buildConfig, type Config } from "./config.ts"
 import type { AdvisorRecord } from "./decisions.ts"
 import type { Span, Telemetry } from "./otel.ts"
 import { defaultRoutingV2, type RoutingV2Config } from "./route-v2.ts"
+import type { UsageRow } from "./usage.ts"
 
 const gpt: Partial<RoutingV2Config> = {
   levels: {
@@ -68,6 +69,7 @@ function setup(
       return opts.reply ? opts.reply() : { text: "  Do X, then Y.  " }
     },
   }
+  const rows: UsageRow[] = []
   const telemetry = {
     span: (s: Span) => spans.push(s),
     count: (name: string, _a: unknown, by = 1) => counts.push({ name, by }),
@@ -78,6 +80,7 @@ function setup(
     config: () => cfg,
     telemetry,
     record: (r) => records.push(r),
+    usage: { add: (row) => rows.push(row) },
     root: async (id) => `root-${id}`,
     now: () => 1_700_000_000_000,
     host,
@@ -86,6 +89,7 @@ function setup(
     tool,
     asks,
     records,
+    rows,
     counts,
     spans,
     setItems: (next: TranscriptItem[]) => (items = next),
@@ -283,6 +287,25 @@ describe("advisor tool", () => {
       assert.equal(records.length, 0)
     })
 
+  it("writes one advisor usage row for the call", async () => {
+    const { tool, rows } = setup({
+      reply: () => ({
+        text: "ok",
+        inputTokens: 1000,
+        outputTokens: 100,
+        cost: 0.5,
+      }),
+    })
+    await tool.execute("q", call)
+    assert.equal(rows.length, 1)
+    assert.equal(rows[0].role, "advisor")
+    assert.equal(rows[0].agent, "builder")
+    assert.equal(rows[0].input, 1000)
+    assert.equal(rows[0].output, 100)
+    assert.equal(rows[0].cost, 0.5)
+    assert.deepEqual(rows[0].sessions, ["ses_1"])
+  })
+
   it("refuses an empty question without calling the advisor", async () => {
     const { tool, asks } = setup()
     assert.match(await tool.execute("  ", call), /needs a question/)
@@ -294,6 +317,7 @@ describe("advisor tool", () => {
       config: () => configOf(),
       telemetry: { count() {}, span() {} } as unknown as Telemetry,
       record() {},
+      usage: { add() {} },
       root: async (s) => s,
       now: Date.now,
       host: {

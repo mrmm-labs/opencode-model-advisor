@@ -11,6 +11,7 @@ import type { AdvisorRecord } from "./decisions.ts"
 import { log } from "./logger.ts"
 import type { Telemetry } from "./otel.ts"
 import { listCostUsd } from "./pricing.ts"
+import { advisorRow, type Usage } from "./usage.ts"
 
 export const TOOL_NAME = "advisor"
 export const TOOL_DESCRIPTION =
@@ -57,6 +58,7 @@ export type ToolDeps = {
   config: () => Config
   telemetry: Telemetry
   record: (record: AdvisorRecord) => void
+  usage: Usage
   root: (session: string) => Promise<string>
   now: () => number
   host: ToolHost
@@ -196,6 +198,20 @@ export function createAdvisorTool(deps: ToolDeps) {
               output: outTokens,
               cache: { read: 0, write: 0 },
             }) ?? 0)
+      deps.usage.add(
+        advisorRow(
+          {
+            model: bareModel(advisorModel),
+            input: inTokens,
+            output: outTokens,
+            cacheRead: 0,
+            cacheWrite: 0,
+            cost,
+          },
+          { agent, session: call.sessionID },
+          deps.now(),
+        ),
+      )
       deps.telemetry.count("model_advisor.advisor.calls", { agent })
       deps.telemetry.count(
         "model_advisor.advisor.tokens",

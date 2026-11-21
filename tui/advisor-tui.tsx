@@ -41,6 +41,7 @@ import {
   type Deps,
   type Ui,
 } from "../dist/commands.js"
+import { UsageReader } from "../dist/usage.js"
 import { createConnectors } from "../dist/connectors.js"
 import { explain } from "../dist/explain.js"
 import { hintFacts, parseMarkers } from "../dist/hint.js"
@@ -67,6 +68,7 @@ import {
   SECTIONS,
   sessionLines,
   settingRows,
+  usageLines,
   suggestionEdit,
   suggestionOptions,
   suggestionTitle,
@@ -148,6 +150,7 @@ const loadConfig = () => {
 
 function start(host: Host): () => void {
   const reader = new RecordReader()
+  const usageReader = new UsageReader()
   let lastAlert: string | undefined
 
   const announce = async (alert: AlertRecord, all: AdvisorRecord[]) => {
@@ -167,6 +170,7 @@ function start(host: Host): () => void {
   }
   const watcher = new AlertWatcher()
   const [records, setRecords] = createSignal(reader.read())
+  const [usage, setUsage] = createSignal(usageReader.read())
   watcher.fresh(reader.read())
   let lastSession: string | undefined
 
@@ -175,6 +179,7 @@ function start(host: Host): () => void {
   const timer = setInterval(() => {
     const all = reader.read()
     setRecords(all)
+    setUsage(usageReader.read())
     for (const alert of watcher.fresh(all)) void announce(alert, all)
   }, 2000)
 
@@ -187,6 +192,8 @@ function start(host: Host): () => void {
     const panel = () =>
       compactPanel(records(), session, {
         labels: ruleLabels(loadConfig()),
+        usage: usage(),
+        mode: loadConfig().mode,
       }) as CompactPanel
     const c = () => host.colours() as Record<keyof Colours, never>
     const tone = (t: Tone | undefined) =>
@@ -478,6 +485,11 @@ function start(host: Host): () => void {
         : ["Open a session first."]
     },
     rulesLines: () => rulesLines(loadConfig()),
+    usageLines: (window) =>
+      usageLines(
+        usageReader.read(),
+        (["today", "7d", "30d"].includes(window) ? window : "today") as never,
+      ),
     alertLines: () =>
       alertLines(reader.read(), 20, alertContextOf(loadConfig())),
     decisionDetail: (id) =>

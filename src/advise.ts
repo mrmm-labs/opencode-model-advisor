@@ -10,13 +10,13 @@ import type { AlertRecord, AdviceRecord, AdvisorRecord } from "./decisions.ts"
 import { JUDGE_MARK } from "./judge.ts"
 import { log } from "./logger.ts"
 import type { Telemetry } from "./otel.ts"
-import { listCostUsd } from "./pricing.ts"
 import { skipReason } from "./router.ts"
 import {
   filterMessage,
   filterStream,
   type AdvisorUsage,
 } from "./stream-filter.ts"
+import { advisorCost, advisorRow, type Usage } from "./usage.ts"
 
 export const BETA = "advisor-tool-2026-03-01"
 export const TOOL_TYPE = "advisor_20260301"
@@ -50,6 +50,7 @@ export type AdviseDeps = {
   config: () => Config
   telemetry: Telemetry
   record: (record: AdvisorRecord) => void
+  usage: Usage
   root: (session: string) => Promise<string>
   now: () => number
 }
@@ -325,13 +326,15 @@ export function createAdvise(deps: AdviseDeps) {
   ): Promise<void> {
     const agent = req.agent ?? "unknown"
     const model = usage.model ?? (advisorModelOf(config) as string)
-    // The advisor reads the transcript uncached, so list price covers it.
-    const cost =
-      listCostUsd(model, {
-        input: usage.inputTokens,
-        output: usage.outputTokens,
-        cache: { read: usage.cacheRead, write: usage.cacheWrite },
-      }) ?? 0
+    const priced = usage.perCall.map((c) => {
+      const m = c.model ?? model
+      return { ...c, model: m, cost: advisorCost(m, c) }
+    })
+    const cost = priced.reduce((n, c) => n + c.cost, 0)
+    for (const c of priced)
+      deps.usage.add(
+        advisorRow(c, { agent, session: req.sessionID }, deps.now()),
+      )
     deps.telemetry.count("model_advisor.advisor.calls", { agent }, usage.calls)
     deps.telemetry.count(
       "model_advisor.advisor.tokens",
