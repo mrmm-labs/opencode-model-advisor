@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0](https://github.com/mrmm-labs/opencode-model-advisor/compare/v0.6.0...v0.7.0) (2026-11-21)
+
+
+### Features
+
+* track usage of executor and advisor models ([#28](https://github.com/mrmm-labs/opencode-model-advisor/issues/28)) ([2243110](https://github.com/mrmm-labs/opencode-model-advisor/commit/2243110b63a3b0100e3cf79913583cdaad192aa2))
+
 ## [0.6.0](https://github.com/mrmm-labs/opencode-model-advisor/compare/v0.5.0...v0.6.0) (2026-11-20)
 
 
