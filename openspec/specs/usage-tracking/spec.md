@@ -1,7 +1,8 @@
 # usage-tracking Specification
 
 ## Purpose
-TBD - created by archiving change usage-tracking. Update Purpose after archive.
+
+Record what each executor step and advisor call used and cost, per model, agent and day, and show it as a report, a sidebar line and metrics.
 
 ## Requirements
 
