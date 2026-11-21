@@ -470,6 +470,15 @@ pnpm run test:integration   # the built plugin in an isolated OpenCode, replayed
 pnpm run smoke:telemetry    # synthetic decisions to an OTLP collector
 ```
 
+### Spec first
+
+Behaviour is specified with [OpenSpec](https://github.com/Fission-AI/OpenSpec). The current
+behaviour lives in `openspec/specs/`, one folder per capability. Every non-trivial change starts as
+`openspec/changes/<id>/` with a proposal, tasks and spec deltas, validated with
+`openspec validate --strict` and archived after release. `mise install` provides the pinned CLI and
+`mise run setup` regenerates the OpenCode and Claude Code skills and commands. CI runs
+`openspec validate --all --strict`.
+
 The integration test points `XDG_*` and `HOME` at a temp directory and never touches your
 OpenCode configuration.
 
