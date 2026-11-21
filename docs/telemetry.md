@@ -70,6 +70,17 @@ are the existing `model_advisor.advisor.*` ones. Names below are as Prometheus s
 | `model_router_calibration_monotonic`     | gauge     | 1 when higher levels did not do worse            |
 | `model_router_calibration_suggestions`   | gauge     | open suggestions                                 |
 
+## Usage metrics
+
+Counted by the plugin itself (delta counters), one point per executor step and advisor call. Names
+as Prometheus shows them; every metric has `model`, `role` (`executor` or `advisor`) and `agent`.
+
+| Metric                              | Extra label | Notes                                                    |
+| ----------------------------------- | ----------- | -------------------------------------------------------- |
+| `model_advisor_usage_requests_total` |             | steps and advisor calls                                  |
+| `model_advisor_usage_tokens_total`   | `kind`      | `input`, `output`, `reasoning`, `cache_read`, `cache_write` |
+| `model_advisor_usage_cost_usd_total` |             | reported cost, else list price from tokens               |
+
 ## Collector and dashboard
 
 1. Run an OpenTelemetry Collector contrib build, version 0.165 or newer, with

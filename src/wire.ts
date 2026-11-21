@@ -89,6 +89,7 @@ export function createCore(host: Host, store = new ConfigStore()): Core {
         config: () => store.get(),
         telemetry,
         record: appendRecord,
+        usage: advisor.usage,
         root,
         now: wallNow,
         host: host.advisorTool,

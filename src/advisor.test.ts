@@ -7,6 +7,7 @@ import type { AdvisorRecord } from "./decisions.ts"
 import type { ConnectorResult } from "./route-v2.ts"
 import type { Span, Telemetry } from "./otel.ts"
 import { traceIdFor } from "./otel.ts"
+import type { UsageRow } from "./usage.ts"
 
 const RULES = [
   { id: "risky", when: { prompt: "(?i)\\bauth\\b" }, tier: "opus" },
@@ -41,15 +42,17 @@ function setup(
     dispose: async () => {},
   } as unknown as Telemetry
   const written: AdvisorRecord[] = []
+  const rows: UsageRow[] = []
   const advisor = createAdvisor({
     config: () => config,
     telemetry,
     record: (r) => written.push(r),
+    usageSink: (r) => rows.push(r),
     session: async (id) => host.sessions?.[id],
     judge: host.judge ? async ({ prompt }) => host.judge!(prompt) : undefined,
   })
   const named = (name: string) => counts.filter((c) => c.name === name)
-  return { advisor, spans, counts, records, named, written }
+  return { advisor, spans, counts, records, named, written, rows }
 }
 
 const dispatch = (over: object = {}) => ({
@@ -358,6 +361,131 @@ const step = (
 ) => ({
   type: "session.step.ended",
   data: { sessionID: id, cost, tokens },
+})
+
+const started = (
+  id: string,
+  message: string,
+  agent = "builder",
+  model = "claude-opus-5-5",
+) => ({
+  type: "session.step.started",
+  data: {
+    sessionID: id,
+    assistantMessageID: message,
+    agent,
+    model: { id: model, providerID: "anthropic" },
+  },
+})
+const ended = (
+  id: string,
+  message: string,
+  cost: number,
+  tokens: object = {
+    input: 1000,
+    output: 200,
+    reasoning: 50,
+    cache: { read: 4000, write: 300 },
+  },
+  type = "session.step.ended",
+) => ({
+  type,
+  data: { sessionID: id, assistantMessageID: message, cost, tokens },
+})
+
+describe("executor usage rows", () => {
+  it("writes the started model and agent with the ended tokens and cost", () => {
+    const t = setup()
+    t.advisor.onEvent(started("ses_a", "msg_1"))
+    t.advisor.onEvent(ended("ses_a", "msg_1", 0.12))
+    assert.equal(t.rows.length, 1)
+    const r = t.rows[0]
+    assert.deepEqual(
+      [r.role, r.provider, r.model, r.agent, r.requests],
+      ["executor", "anthropic", "claude-opus-5-5", "builder", 1],
+    )
+    assert.deepEqual(
+      [r.input, r.output, r.reasoning, r.cacheRead, r.cacheWrite, r.cost],
+      [1000, 200, 50, 4000, 300, 0.12],
+    )
+    assert.equal(r.est, undefined)
+    assert.deepEqual(r.sessions, ["ses_a"])
+  })
+
+  it("prices a zero-cost step at list from its tokens and marks it estimated", () => {
+    const t = setup()
+    t.advisor.onEvent(started("ses_a", "msg_1"))
+    t.advisor.onEvent(ended("ses_a", "msg_1", 0))
+    const expected = (1000 * 5 + 250 * 25 + 4000 * 0.5 + 300 * 6.25) / 1e6
+    assert.ok(Math.abs(t.rows[0].cost - expected) < 1e-9)
+    assert.equal(t.rows[0].est, true)
+  })
+
+  it("counts it in the usage metrics with model, role and agent", () => {
+    const t = setup()
+    t.advisor.onEvent(started("ses_a", "msg_1"))
+    t.advisor.onEvent(ended("ses_a", "msg_1", 0.12))
+    const attrs = {
+      model: "claude-opus-5-5",
+      role: "executor",
+      agent: "builder",
+    }
+    assert.deepEqual(t.named("model_advisor.usage.requests"), [
+      { name: "model_advisor.usage.requests", attrs, by: 1 },
+    ])
+    assert.deepEqual(
+      t.named("model_advisor.usage.tokens").map((c) => [c.attrs.kind, c.by]),
+      [
+        ["input", 1000],
+        ["output", 200],
+        ["reasoning", 50],
+        ["cache_read", 4000],
+        ["cache_write", 300],
+      ],
+    )
+    assert.equal(t.named("model_advisor.usage.cost_usd")[0].by, 0.12)
+  })
+
+  it("counts a failed step that carries tokens, and nothing for one that does not", () => {
+    const t = setup()
+    t.advisor.onEvent(started("ses_a", "msg_1"))
+    t.advisor.onEvent(
+      ended("ses_a", "msg_1", 0.01, undefined, "session.step.failed"),
+    )
+    t.advisor.onEvent(started("ses_a", "msg_2"))
+    t.advisor.onEvent({
+      type: "session.step.failed",
+      data: { sessionID: "ses_a", assistantMessageID: "msg_2" },
+    })
+    assert.equal(t.rows.length, 1)
+  })
+
+  it("keeps the model unknown when the step start was never seen", () => {
+    const t = setup()
+    t.advisor.onEvent(ended("ses_a", "msg_9", 0.5))
+    assert.deepEqual([t.rows[0].model, t.rows[0].agent], ["unknown", "unknown"])
+  })
+
+  it("stores the shadow saving of a routed child on its row", async () => {
+    const t = setup(
+      { rules: [{ id: "x", when: { agent: "explore" }, tier: "sonnet" }] },
+      { sessions: SESSIONS },
+    )
+    await t.advisor.decide(dispatch({ agent: "explore" }))
+    t.advisor.onEvent(created("ses_grand", "explore"))
+    t.advisor.onEvent(started("ses_grand", "msg_1", "explore"))
+    t.advisor.onEvent(ended("ses_grand", "msg_1", 10))
+    assert.equal(t.rows[0].wouldSave, 10 * (1 - 3 / 5))
+    assert.equal(t.rows[0].saved, undefined)
+  })
+
+  it("survives malformed events", () => {
+    const t = setup()
+    t.advisor.onEvent({ type: "session.step.started" })
+    t.advisor.onEvent({ type: "session.step.ended", data: {} })
+    t.advisor.onEvent({ type: "session.step.ended", data: null as never })
+    assert.equal(t.rows.length, 0)
+  })
 })
 
 describe("shadow saving estimate", () => {

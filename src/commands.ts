@@ -64,6 +64,7 @@ export interface Deps {
   sessionLines(): string[]
   rulesLines(): string[]
   alertLines(): string[]
+  usageLines(window: string): string[]
   decisionDetail(id: string): string | undefined
   setMode(mode: string): Promise<void>
   pin(target: string, tier: string): void
@@ -138,6 +139,25 @@ export const SUBS: Sub[] = [
     category: "Look at",
     args: [],
     run: (_, d) => d.show("Model router: alerts", d.alertLines()),
+  }),
+  sub({
+    name: "usage",
+    title: "Usage",
+    description: "What each model cost, executor and advisor: today, 7d or 30d",
+    category: "Look at",
+    args: [
+      {
+        name: "window",
+        kind: "enum",
+        placeholder: "today, 7d or 30d",
+        options: () =>
+          ["today", "7d", "30d"].map((w) => ({ title: w, value: w })),
+        optional: true,
+        default: () => "today",
+      },
+    ],
+    run: ({ window }, d) =>
+      d.show("Model router: usage", d.usageLines(window ?? "today")),
   }),
   sub({
     name: "decisions",

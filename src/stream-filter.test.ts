@@ -95,6 +95,15 @@ describe("advisor stream filter", () => {
       cacheRead: 0,
       cacheWrite: 0,
       model: "claude-opus-5-5",
+      perCall: [
+        {
+          model: "claude-opus-5-5",
+          input: 29025,
+          output: 1763,
+          cacheRead: 0,
+          cacheWrite: 0,
+        },
+      ],
     })
   })
 
@@ -178,5 +187,35 @@ describe("advisor stream filter", () => {
     assert.equal(message.usage.output_tokens, 4)
     assert.equal(usage.calls, 1)
     assert.equal(usage.inputTokens, 90)
+  })
+
+  it("keeps each advisor call with its own model and cache tokens", () => {
+    const message = {
+      content: [],
+      usage: {
+        iterations: [
+          { type: "message", input_tokens: 3, output_tokens: 4 },
+          {
+            type: "advisor_message",
+            model: "claude-opus-5-5",
+            input_tokens: 90,
+            output_tokens: 10,
+            cache_read_input_tokens: 5,
+            cache_creation_input_tokens: 6,
+          },
+          { type: "advisor_message", input_tokens: 7, output_tokens: 8 },
+        ],
+      },
+    }
+    assert.deepEqual(filterMessage(message).perCall, [
+      {
+        model: "claude-opus-5-5",
+        input: 90,
+        output: 10,
+        cacheRead: 5,
+        cacheWrite: 6,
+      },
+      { model: undefined, input: 7, output: 8, cacheRead: 0, cacheWrite: 0 },
+    ])
   })
 })

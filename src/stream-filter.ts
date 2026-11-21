@@ -8,6 +8,8 @@
  * block indexes, and removes `advisor_message` entries from `usage.iterations`,
  * keeping their numbers for the caller. Every other byte is passed through.
  */
+import type { AdvisorCall } from "./usage.ts"
+
 export type AdvisorUsage = {
   calls: number
   inputTokens: number
@@ -15,6 +17,8 @@ export type AdvisorUsage = {
   cacheRead: number
   cacheWrite: number
   model?: string
+  /** Each advisor call on its own, for per-model accounting. */
+  perCall: AdvisorCall[]
 }
 
 export const emptyUsage = (): AdvisorUsage => ({
@@ -23,6 +27,7 @@ export const emptyUsage = (): AdvisorUsage => ({
   outputTokens: 0,
   cacheRead: 0,
   cacheWrite: 0,
+  perCall: [],
 })
 
 type Json = Record<string, any>
@@ -53,6 +58,14 @@ function fixUsage(usage: Json | undefined, into: AdvisorUsage): boolean {
   into.cacheRead += sum(advisor, "cache_read_input_tokens")
   into.cacheWrite += sum(advisor, "cache_creation_input_tokens")
   into.model = advisor[advisor.length - 1].model ?? into.model
+  for (const i of advisor)
+    into.perCall.push({
+      model: typeof i.model === "string" ? i.model : undefined,
+      input: Number(i.input_tokens) || 0,
+      output: Number(i.output_tokens) || 0,
+      cacheRead: Number(i.cache_read_input_tokens) || 0,
+      cacheWrite: Number(i.cache_creation_input_tokens) || 0,
+    })
   usage.iterations = executor
   usage.input_tokens = sum(executor, "input_tokens")
   usage.output_tokens = sum(executor, "output_tokens")

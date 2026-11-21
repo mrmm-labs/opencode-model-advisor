@@ -3,6 +3,7 @@ import { describe, it } from "node:test"
 
 import type { AdvisorRecord } from "./decisions.ts"
 import { buildConfig, defaultConfig } from "./config.ts"
+import { dayOf, type UsageRow } from "./usage.ts"
 import {
   defaultRoutingV2,
   type ConnectorResult,
@@ -34,6 +35,8 @@ import {
   SECTIONS,
   sessionLines,
   settingRows,
+  spendText,
+  usageLines,
   suggestionEdit,
   suggestionOptions,
   suggestionTitle,
@@ -161,7 +164,7 @@ describe("compact panel", () => {
           value: "sonnet 5.5 — cheaper",
           tone: "good",
         },
-        { label: "Today      ", value: "would save ≈ $12", tone: "good" },
+        { label: "Saving     ", value: "would save ≈ $12", tone: "good" },
       ],
     })
   })
@@ -202,7 +205,7 @@ describe("compact panel", () => {
     const rows = rowsOf([applied, saving(1, 3)])
     assert.deepEqual(
       rows?.map((r) => r.label.trim()),
-      ["Last task", "Why", "Today"],
+      ["Last task", "Why", "Saving"],
     )
     assert.equal(rows?.[2]?.value, "saved ≈ $3.00")
   })
@@ -375,14 +378,14 @@ describe("humane dialogs", () => {
   it("puts the session's mode in words and says what today saves", () => {
     const lines = sessionLines([...records, sav(1.5)], "root", {}, noon)
     assert.equal(lines[0], "The router is watching only")
-    assert.ok(lines.includes("Today: would save ≈ $1.50"))
+    assert.ok(lines.includes("Saving: would save ≈ $1.50"))
     const enforce = [
       { ...(records[0] as object), mode: "enforce" } as AdvisorRecord,
       sav(1.5),
     ]
     const applied = sessionLines(enforce, "root", {}, noon)
     assert.equal(applied[0], "The router is choosing models")
-    assert.ok(applied.includes("Today: saved ≈ $1.50"))
+    assert.ok(applied.includes("Saving: saved ≈ $1.50"))
   })
 
   it("uses the config's label in the session, decisions and detail", () => {
@@ -1252,5 +1255,134 @@ describe("calibration view", () => {
       calibrationFile({ XDG_DATA_HOME: "/d" }),
       "/d/opencode/model-advisor/calibration.json",
     )
+  })
+})
+
+describe("usage views", () => {
+  const noon = new Date(2026, 10, 21, 12).getTime()
+  const usageRow = (over: Partial<UsageRow> = {}): UsageRow => ({
+    v: 1,
+    day: dayOf(noon),
+    provider: "anthropic",
+    model: "claude-opus-5-5",
+    agent: "builder",
+    role: "executor",
+    requests: 1,
+    input: 1000,
+    output: 200,
+    reasoning: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    cost: 1,
+    sessions: ["s"],
+    ...over,
+  })
+  const today = [
+    usageRow({ cost: 3.1, requests: 40, input: 120_000, output: 31_000 }),
+    usageRow({
+      role: "advisor",
+      cost: 0.4,
+      requests: 6,
+      input: 18_000,
+      output: 2100,
+    }),
+  ]
+
+  it("spendText shows the dearest executor family then the advisor, shortened to fit", () => {
+    assert.equal(spendText(today, 40, noon), "opus $3.10 · advisor $0.40")
+    assert.equal(spendText(today, 25, noon), "opus $3.10 · adv $0.40")
+    assert.equal(spendText(today, 12, noon), "opus $3.10")
+    assert.equal(spendText([], 25, noon), undefined)
+    assert.equal(
+      spendText([usageRow({ day: "2020-01-01" })], 25, noon),
+      undefined,
+      "yesterday is not today",
+    )
+  })
+
+  it("spendText merges a family and lists two", () => {
+    const rows = [
+      usageRow({ cost: 2 }),
+      usageRow({ model: "claude-opus-4-1", cost: 1 }),
+      usageRow({ model: "claude-sonnet-5-5", cost: 12 }),
+      usageRow({ model: "claude-haiku-5-5", cost: 0.1 }),
+    ]
+    assert.equal(spendText(rows, 40, noon), "sonnet $12 · opus $3.00")
+  })
+
+  it("the compact panel gets a Today spend row before Saving", () => {
+    const rows = compactPanel(records, "root", {
+      now: noon,
+      usage: today,
+    })?.rows
+    assert.deepEqual(
+      rows?.map((r) => r.label.trim()),
+      ["Last task", "Why", "Suggested", "Today"],
+    )
+    assert.equal(rows?.[3]?.value, "opus $3.10 · adv $0.40")
+  })
+
+  it("the compact panel shows Today alone in a session with no decision", () => {
+    assert.deepEqual(
+      compactPanel(records, "other", {
+        now: noon,
+        usage: today,
+        mode: "enforce",
+      }),
+      {
+        mode: "enforce",
+        rows: [{ label: "Today      ", value: "opus $3.10 · adv $0.40" }],
+      },
+    )
+    assert.equal(compactPanel(records, "other", { now: noon }), undefined)
+  })
+
+  it("usageLines: a table per model and role, totals, advisor share and points", () => {
+    const lines = usageLines(today, "today", noon)
+    assert.equal(lines[0], "Usage today")
+    assert.match(lines[2]!, /^Model\s+Role\s+Req\s+In\s+Out\s+Cache\s+Cost$/)
+    assert.match(
+      lines[3]!,
+      /^opus 5\.5\s+executor\s+40\s+120k\s+31k\s+0\s+\$3\.10$/,
+    )
+    assert.match(
+      lines[4]!,
+      /^opus 5\.5\s+advisor\s+6\s+18k\s+2\.1k\s+0\s+\$0\.40$/,
+    )
+    assert.match(lines[6]!, /^Total\s+46\s+138k\s+33k\s+0\s+\$3\.50$/)
+    assert.ok(lines.includes("Advisor share of cost: 11% ($0.40 of $3.50)"))
+    assert.ok(lines.some((l) => l.startsWith("Points: n/a")))
+    assert.ok(!lines.some((l) => l.includes("list-price")))
+  })
+
+  it("usageLines: suggested versus applied, and the list-price note", () => {
+    const lines = usageLines(
+      [usageRow({ wouldSave: 0.9, est: true }), usageRow({ saved: 0.2 })],
+      "7d",
+      noon,
+    )
+    assert.equal(lines[0], "Usage last 7 days")
+    assert.ok(
+      lines.includes(
+        "Suggested: would save ≈ $0.90 (not applied) · applied: saved ≈ $0.20",
+      ),
+    )
+    assert.ok(lines.some((l) => l.includes("list-price estimate")))
+    assert.ok(
+      usageLines([usageRow()], "today", noon).includes(
+        "Suggested: no shadow estimate yet",
+      ),
+    )
+  })
+
+  it("usageLines: windows and the empty case", () => {
+    const old = usageRow({ day: dayOf(noon - 10 * 86_400_000) })
+    assert.deepEqual(usageLines([old], "today", noon), [
+      "No usage yet (today).",
+    ])
+    assert.ok(usageLines([old], "30d", noon)[0]!.startsWith("Usage last 30"))
+    assert.deepEqual(usageLines([], "7d", noon), [
+      "No usage yet (last 7 days).",
+    ])
   })
 })

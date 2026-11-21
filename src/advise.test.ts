@@ -22,6 +22,7 @@ import type { AdvisorRecord } from "./decisions.ts"
 import { judgePrompt } from "./judge.ts"
 import type { Span, Telemetry } from "./otel.ts"
 import { defaultRoutingV2, type RoutingV2Config } from "./route-v2.ts"
+import type { UsageRow } from "./usage.ts"
 
 const SSE = readFileSync(
   new URL("./fixtures/advisor-response.sse", import.meta.url),
@@ -42,6 +43,7 @@ function setup(config: object = {}, v2?: Partial<RoutingV2Config>) {
     by: number
   }> = []
   const spans: Span[] = []
+  const rows: UsageRow[] = []
   const telemetry = {
     span: (s: Span) => spans.push(s),
     count: (name: string, attrs: Record<string, unknown>, by = 1) =>
@@ -53,11 +55,12 @@ function setup(config: object = {}, v2?: Partial<RoutingV2Config>) {
     config: () => cfg,
     telemetry,
     record: (r) => records.push(r),
+    usage: { add: (row) => rows.push(row) },
     root: async (id) => `root-${id}`,
     now: () => 1_700_000_000_000,
   })
   const named = (name: string) => counts.filter((c) => c.name === name)
-  return { advise, records, counts, spans, named }
+  return { advise, records, rows, counts, spans, named }
 }
 
 const request = (
@@ -224,7 +227,7 @@ describe("advisor response", () => {
   })
 
   it("filters the stream and records usage, cost, a span and metrics", async () => {
-    const { advise, records, spans, named } = setup()
+    const { advise, records, rows, spans, named } = setup()
     const { ctx } = await attached(advise)
     const out = await advise.response(sseResponse(), ctx)
     const text = await out.text()
@@ -257,6 +260,73 @@ describe("advisor response", () => {
     const advice = records.find((r) => r.kind === "advice") as any
     assert.equal(advice.calls, 1)
     assert.equal(advice.session, "ses_1")
+    assert.equal(rows.length, 1)
+    assert.deepEqual(
+      { ...rows[0], cost: undefined },
+      {
+        v: 1,
+        day: rows[0].day,
+        provider: "anthropic",
+        model: "claude-opus-5-5",
+        agent: "builder",
+        role: "advisor",
+        requests: 1,
+        input: 29025,
+        output: 1763,
+        reasoning: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        cost: undefined,
+        sessions: ["ses_1"],
+      },
+    )
+    assert.ok(Math.abs(rows[0].cost - cost) < 1e-9)
+  })
+
+  it("writes one usage row per advisor call and leaves the executor's tokens out", async () => {
+    const { advise, rows, named } = setup()
+    const { ctx } = await attached(advise)
+    const body = {
+      content: [{ type: "text", text: "ok" }],
+      usage: {
+        input_tokens: 5,
+        output_tokens: 6,
+        iterations: [
+          { type: "message", input_tokens: 5, output_tokens: 6 },
+          {
+            type: "advisor_message",
+            model: "claude-opus-5-5",
+            input_tokens: 1000,
+            output_tokens: 100,
+          },
+          {
+            type: "advisor_message",
+            model: "claude-sonnet-5-5",
+            input_tokens: 2000,
+            output_tokens: 200,
+            cache_read_input_tokens: 400,
+          },
+        ],
+      },
+    }
+    const out = await advise.response(
+      sseResponse(JSON.stringify(body), 200, "application/json"),
+      ctx,
+    )
+    const parsed = await out.json()
+    assert.equal(parsed.usage.input_tokens, 5)
+    assert.deepEqual(
+      rows.map((r) => [r.role, r.model, r.input, r.output, r.cacheRead]),
+      [
+        ["advisor", "claude-opus-5-5", 1000, 100, 0],
+        ["advisor", "claude-sonnet-5-5", 2000, 200, 400],
+      ],
+    )
+    assert.ok(Math.abs(rows[0].cost - (1000 * 5 + 100 * 25) / 1e6) < 1e-9)
+    assert.ok(
+      Math.abs(rows[1].cost - (2000 * 3 + 200 * 15 + 400 * 0.3) / 1e6) < 1e-9,
+    )
+    assert.equal(named("model_advisor.advisor.calls")[0].by, 2)
   })
 
   it("records nothing when the advisor was attached but never called", async () => {

@@ -9,6 +9,14 @@ import { calibrationPath } from "./calibrate.ts"
 import { getAt, parsePath, type Path } from "./config-edit.ts"
 import type { Config } from "./config.ts"
 import { inputPrice } from "./pricing.ts"
+import {
+  byModel,
+  inWindow,
+  total,
+  type Line,
+  type UsageRow,
+  type UsageWindow,
+} from "./usage.ts"
 import type {
   AdviceRecord,
   AdvisorRecord,
@@ -274,6 +282,120 @@ function savedToday(records: AdvisorRecord[], now: number): number | undefined {
   return net
 }
 
+/** `claude-opus-5-5` -> "opus"; a model of another shape keeps its id. */
+const family = (id: string): string => prettyModel(id).split(" ")[0]!
+
+/**
+ * Today's spend for the sidebar: `opus $3.10 · advisor $0.40`, the two dearest
+ * executor families then the advisor, shortened until it fits `room`.
+ */
+export function spendText(
+  rows: UsageRow[],
+  room: number,
+  now = Date.now(),
+): string | undefined {
+  const today = inWindow(rows, "today", now)
+  const advisor = total(today.filter((r) => r.role === "advisor"))
+  const byFamily = new Map<string, number>()
+  for (const r of today)
+    if (r.role === "executor")
+      byFamily.set(
+        family(r.model),
+        (byFamily.get(family(r.model)) ?? 0) + r.cost,
+      )
+  const top = [...byFamily].toSorted((a, b) => b[1] - a[1])
+  if (top.length === 0 && advisor.requests === 0) return undefined
+  const part = ([name, usd]: [string, number]) => `${name} ${usdShort(usd)}`
+  const spent = advisor.requests > 0
+  const options = [
+    ...[2, 1].flatMap((n) =>
+      ["advisor", "adv"].map((word) =>
+        [
+          ...top.slice(0, n).map(part),
+          ...(spent ? [part([word, advisor.cost])] : []),
+        ].join(" · "),
+      ),
+    ),
+    top.slice(0, 1).map(part).join(""),
+    ...(spent ? [part(["adv", advisor.cost])] : []),
+  ].filter(Boolean)
+  return options.find((o) => o.length <= room) ?? clip(options[0]!, room)
+}
+
+/** Tokens as 950, 12k, 1.2M. */
+const compactNumber = (n: number): string =>
+  n >= 1e6
+    ? `${(n / 1e6).toFixed(1)}M`
+    : n >= 1e4
+      ? `${Math.round(n / 1e3)}k`
+      : n >= 1e3
+        ? `${(n / 1e3).toFixed(1)}k`
+        : String(n)
+
+/** The `/advisor usage` dialog: one line per model and role, totals, advisor share, suggested versus actual. */
+export function usageLines(
+  rows: UsageRow[],
+  window: UsageWindow,
+  now = Date.now(),
+): string[] {
+  const inside = inWindow(rows, window, now)
+  const title =
+    window === "today" ? "today" : `last ${window.slice(0, -1)} days`
+  if (inside.length === 0) return [`No usage yet (${title}).`]
+  const lines = byModel(inside)
+  const cells = (
+    l: Line | ReturnType<typeof total>,
+    name: string,
+    role: string,
+  ) => [
+    name,
+    role,
+    String(l.requests),
+    compactNumber(l.input),
+    compactNumber(l.output + l.reasoning),
+    compactNumber(l.cacheRead + l.cacheWrite),
+    money(l.cost),
+  ]
+  const all = total(inside)
+  const table = [
+    ["Model", "Role", "Req", "In", "Out", "Cache", "Cost"],
+    ...lines.map((l) => cells(l, prettyModel(l.model), l.role)),
+    cells(all, "Total", ""),
+  ]
+  const widths = table[0]!.map((_, c) =>
+    Math.max(...table.map((r) => r[c]!.length)),
+  )
+  const row = (r: string[]) =>
+    r
+      .map((v, c) => (c < 2 ? v.padEnd(widths[c]!) : v.padStart(widths[c]!)))
+      .join("  ")
+      .trimEnd()
+  const advisor = total(inside.filter((r) => r.role === "advisor"))
+  const share = all.cost > 0 ? Math.round((advisor.cost / all.cost) * 100) : 0
+  const out = [
+    `Usage ${title}`,
+    "",
+    row(table[0]!),
+    ...table.slice(1, -1).map(row),
+    "",
+    row(table.at(-1)!),
+  ]
+  out.push(
+    "",
+    `Advisor share of cost: ${share}% (${money(advisor.cost)} of ${money(all.cost)})`,
+  )
+  if (all.wouldSave !== 0 || all.saved !== 0)
+    out.push(
+      `Suggested: ${todayText(all.wouldSave, true)} (not applied) · applied: ${all.saved === 0 ? "nothing yet" : todayText(all.saved, false)}`,
+    )
+  else out.push("Suggested: no shadow estimate yet")
+  out.push("Points: n/a (the plugin has no weekly-quota source)")
+  out.push("Out includes reasoning; Cache is read plus write.")
+  if (all.est)
+    out.push("Cost is a list-price estimate where the host reports none.")
+  return out
+}
+
 /**
  * The compact sidebar section for one session, in plain words: the last task
  * and the model it ran on, why the router chose what it did, what it suggests
@@ -283,14 +405,26 @@ function savedToday(records: AdvisorRecord[], now: number): number | undefined {
 export function compactPanel(
   records: AdvisorRecord[],
   session: string,
-  opts: { now?: number; width?: number; labels?: Record<string, string> } = {},
+  opts: {
+    now?: number
+    width?: number
+    labels?: Record<string, string>
+    usage?: UsageRow[]
+    /** Shown when the session has no decision and only spend to show. */
+    mode?: string
+  } = {},
 ): CompactPanel | undefined {
   const { now = Date.now(), width = COMPACT_WIDTH, labels } = opts
   const { mine } = scope(index(records), session)
   const last = mine.at(-1)
-  if (!last) return undefined
   const room = width - 2 - COMPACT_LABEL_WIDTH
   const pad = (label: string) => label.padEnd(COMPACT_LABEL_WIDTH)
+  const spend = spendText(opts.usage ?? [], room, now)
+  const spendRow: CompactRow[] = spend
+    ? [{ label: pad("Today"), value: spend }]
+    : []
+  if (!last)
+    return spend ? { mode: opts.mode ?? "shadow", rows: spendRow } : undefined
   const ran = prettyModel(last.model)
   const agent = clip(last.agent, Math.max(room - ran.length - 3, 4))
   const rows: CompactRow[] = [
@@ -309,10 +443,11 @@ export function compactPanel(
         dir === "cheaper" ? "good" : dir === "stronger" ? "changed" : "muted",
     })
   }
+  rows.push(...spendRow)
   const net = savedToday(records, now)
   if (net !== undefined && Math.abs(net) >= 0.005)
     rows.push({
-      label: pad("Today"),
+      label: pad("Saving"),
       value: clip(todayText(net, last.mode !== "enforce"), room),
       tone: net > 0 ? "good" : "changed",
     })
@@ -337,7 +472,7 @@ export function sessionLines(
     "",
     ...panel.rows.flatMap((r) => [`${r.agent}  ${r.models}`, `  ${r.why}`]),
     ...(net !== undefined && Math.abs(net) >= 0.005
-      ? ["", `Today: ${todayText(net, panel.mode !== "enforce")}`]
+      ? ["", `Saving: ${todayText(net, panel.mode !== "enforce")}`]
       : []),
     ...(panel.advice ? ["", panel.advice] : []),
     "",

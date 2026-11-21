@@ -371,6 +371,39 @@ panel(
 )
 endRow()
 
+row("Usage")
+panel(
+  "timeseries",
+  "Cost by model and role (USD)",
+  { x: 0, w: 12 },
+  [
+    {
+      expr: "sum by (model, role) (increase(model_advisor_usage_cost_usd_total[$__rate_interval]))",
+      legend: "{{model}} {{role}}",
+    },
+  ],
+  {
+    ...stacked,
+    fieldConfig: {
+      ...stacked.fieldConfig,
+      defaults: { ...stacked.fieldConfig.defaults, unit: "currencyUSD" },
+    },
+  },
+)
+panel(
+  "timeseries",
+  "Tokens by model and role",
+  { x: 12, w: 12 },
+  [
+    {
+      expr: "sum by (model, role) (increase(model_advisor_usage_tokens_total[$__rate_interval]))",
+      legend: "{{model}} {{role}}",
+    },
+  ],
+  stacked,
+)
+endRow()
+
 export const dashboard = () => ({
   uid: "model-router-v2",
   title: "Model router",

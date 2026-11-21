@@ -18,6 +18,29 @@ const dir = mkdtempSync(join(tmpdir(), "advisor-tui-"))
 process.env.OPENCODE_MODEL_ADVISOR_CONFIG = join(dir, "model-advisor.jsonc")
 process.env.OPENCODE_MODEL_ADVISOR_DECISIONS = join(dir, "decisions.jsonl")
 process.env.OPENCODE_MODEL_ADVISOR_CALIBRATION = join(dir, "calibration.json")
+process.env.OPENCODE_MODEL_ADVISOR_USAGE = join(dir, "usage.jsonl")
+const day = new Date()
+const usageRow = (role: string, cost: number, requests: number) =>
+  JSON.stringify({
+    v: 1,
+    day: `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}-${String(day.getDate()).padStart(2, "0")}`,
+    provider: "anthropic",
+    model: "claude-opus-5-5",
+    agent: "builder",
+    role,
+    requests,
+    input: 1000,
+    output: 200,
+    reasoning: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    cost,
+    sessions: ["s1"],
+  })
+writeFileSync(
+  process.env.OPENCODE_MODEL_ADVISOR_USAGE,
+  `${usageRow("executor", 3.1, 40)}\n${usageRow("advisor", 0.4, 6)}\n`,
+)
 writeFileSync(
   process.env.OPENCODE_MODEL_ADVISOR_CONFIG,
   '// keep me\n{\n  "mode": "shadow",\n  "rules": [{ "id": "r", "when": { "agent": "builder" }, "tier": "opus", "label": "touches auth / security" }],\n  "pins": {}\n}\n',
@@ -118,7 +141,7 @@ assert.equal(slots[0].prepend, undefined)
 
 // The sidebar renders in a headless renderer. FRAMES=1 prints what it drew.
 const { testRender } = await import("@opentui/solid")
-const draw = async (slot: any, height = 6) => {
+const draw = async (slot: any, height = 7) => {
   const shown = await testRender(() => slot.render({ sessionID: "s1" }), {
     width: 38,
     height,
@@ -133,8 +156,9 @@ assert.match(compactFrame, /^Model router · watching only\s*$/m)
 assert.match(compactFrame, /^ {2}Last task {2}builder · opus 5\.5\s*$/m)
 assert.match(compactFrame, /^ {2}Why {8}touches auth \/ security\s*$/m)
 assert.match(compactFrame, /^ {2}Suggested {2}sonnet 5\.5 — cheaper\s*$/m)
-assert.match(compactFrame, /^ {2}Today {6}would save ≈ \$1\.50\s*$/m)
-assert.equal(compactFrame.split("\n").filter((l) => l.trim()).length, 5)
+assert.match(compactFrame, /^ {2}Today {6}opus \$3\.10 · adv \$0\.40\s*$/m)
+assert.match(compactFrame, /^ {2}Saving {5}would save ≈ \$1\.50\s*$/m)
+assert.equal(compactFrame.split("\n").filter((l) => l.trim()).length, 6)
 
 // "full" keeps the old per-decision block, "off" registers nothing.
 const cfgFile = process.env.OPENCODE_MODEL_ADVISOR_CONFIG
@@ -173,6 +197,7 @@ const subNames = [
   "session",
   "rules",
   "alerts",
+  "usage",
   "decisions",
   "calibration",
   "mode",
@@ -212,7 +237,7 @@ const run = async (input = "") => {
 selectAnswers.push("session")
 await run()
 assert.equal(selects[0].title, "Model router")
-assert.equal(selects[0].options.length, 12)
+assert.equal(selects[0].options.length, 13)
 assert.equal(
   selects[0].options.find((o: any) => o.title === "pin").footer,
   "/advisor pin <target> <tier>",
@@ -462,6 +487,17 @@ assert.match(after, /"high": 3/)
 assert.ok(after.startsWith("// keep me"))
 assert.equal(backups().length, 4)
 assert.ok(existsSync(cfgPath))
+
+await run("usage")
+assert.match(alerts.at(-1).message, /^Usage today\n\nModel +Role +Req/)
+assert.match(alerts.at(-1).message, /opus 5\.5 +advisor +6 .* \$0\.40/)
+assert.match(
+  alerts.at(-1).message,
+  /Advisor share of cost: 11% \(\$0\.40 of \$3\.50\)/,
+)
+assert.match(alerts.at(-1).message, /Points: n\/a/)
+await run("usage 30d")
+assert.match(alerts.at(-1).message, /^Usage last 30 days/)
 
 stop()
 console.log("tui runtime check: ok")
